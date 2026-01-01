@@ -1,7 +1,7 @@
 {
     "name": "hono-status-monitor",
-    "version": "1.0.1",
-    "description": "Real-time server monitoring dashboard for Hono.js with WebSocket updates. Express-status-monitor style metrics with Socket.io.",
+    "version": "1.0.2",
+    "description": "Real-time server monitoring dashboard for Hono.js with WebSocket updates. Works with Node.js and Cloudflare Workers. Express-status-monitor style metrics.",
     "main": "dist/index.js",
     "types": "dist/index.d.ts",
     "type": "module",
@@ -23,8 +23,9 @@
         "metrics",
         "real-time",
         "performance",
-        "cpu",
-        "memory",
+        "cloudflare",
+        "workers",
+        "edge",
         "socket.io",
         "express-status-monitor"
     ],

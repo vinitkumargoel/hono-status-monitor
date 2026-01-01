@@ -366,11 +366,64 @@ app.use('/status/*', basicAuth({
 app.route('/status', monitor.routes);
 ```
 
+## ☁️ Cloudflare Workers / Edge Support
+
+This package automatically detects Cloudflare Workers and edge runtimes, providing a lightweight monitor with available metrics.
+
+### Available Metrics in Edge Environments
+
+| Metric | Available | Notes |
+|--------|-----------|-------|
+| Request count & RPS | ✅ | Fully supported |
+| Response time percentiles | ✅ | P50, P95, P99, Avg |
+| Status code breakdown | ✅ | 2xx, 3xx, 4xx, 5xx |
+| Route analytics | ✅ | Top routes, slowest routes |
+| Error tracking | ✅ | Recent errors with timestamps |
+| CPU / Memory / Heap | ❌ | Not available in Workers |
+| Event loop lag | ❌ | Not available in Workers |
+| Load average | ❌ | Not available in Workers |
+| WebSocket real-time | ❌ | Uses polling (5s interval) |
+
+### Usage in Cloudflare Workers
+
+```typescript
+import { Hono } from 'hono';
+import { statusMonitor } from 'hono-status-monitor';
+
+const app = new Hono();
+
+// Create status monitor - automatically detects edge environment
+const monitor = statusMonitor();
+
+// Add middleware to track requests
+app.use('*', monitor.middleware);
+
+// Mount status dashboard
+app.route('/status', monitor.routes);
+
+// Your routes
+app.get('/', (c) => c.text('Hello from Cloudflare Workers!'));
+
+export default app;
+```
+
+> **Note:** In Cloudflare Workers, the dashboard uses HTTP polling (every 5 seconds) instead of WebSocket for updates. The dashboard will display an "Edge Mode" indicator.
+
+### Force Edge Mode
+
+You can explicitly use the edge-compatible monitor:
+
+```typescript
+import { statusMonitorEdge } from 'hono-status-monitor';
+
+const monitor = statusMonitorEdge();
+```
+
 ## 📋 Requirements
 
-- Node.js >= 18.0.0
+- Node.js >= 18.0.0 (for Node.js mode)
 - Hono.js >= 4.0.0
-- @hono/node-server >= 1.0.0
+- @hono/node-server >= 1.0.0 (for Node.js mode only)
 
 ## 🤝 Contributing
 
@@ -383,3 +436,4 @@ MIT © [Vinit Kumar Goel](https://github.com/vinitkumargoel)
 ---
 
 Made with ❤️ for the Hono.js community
+

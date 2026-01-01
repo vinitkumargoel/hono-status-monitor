@@ -179,6 +179,8 @@ export interface MetricsSnapshot {
     workers?: WorkerInfo[];
     /** Number of workers in cluster mode */
     workerCount?: number;
+    /** Whether running in edge mode with limited metrics */
+    isEdgeMode?: boolean;
 }
 
 /**
