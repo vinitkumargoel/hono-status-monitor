@@ -21,6 +21,7 @@ const DEFAULT_EDGE_CONFIG: Required<StatusMonitorConfig> = {
     path: '/status',
     title: 'Server Status',
     socketPath: '/status/socket.io', // Not used in edge, included for compatibility
+    pollingInterval: 5000, // Dashboard polling interval (5s for edge)
     updateInterval: 5000, // Polling interval (not real-time)
     retentionSeconds: 60,
     maxRecentErrors: 10,

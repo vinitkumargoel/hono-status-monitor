@@ -389,7 +389,8 @@ export function generateDashboard({ hostname, uptime, socketPath, title }: Dashb
             }
 
             function fetchMetrics() {
-                fetch('./api/metrics')
+                var basePath = window.location.pathname.endsWith('/') ? window.location.pathname : window.location.pathname + '/';
+                fetch(basePath + 'api/metrics')
                     .then(function(res) { return res.json(); })
                     .then(function(data) {
                         var s = data.snapshot, c = data.charts;
@@ -810,7 +811,8 @@ export function generateEdgeDashboard({ hostname, uptime, title }: EdgeDashboard
             }
 
             function fetchMetrics() {
-                fetch('./api/metrics')
+                var basePath = window.location.pathname.endsWith('/') ? window.location.pathname : window.location.pathname + '/';
+                fetch(basePath + 'api/metrics')
                     .then(function(res) { return res.json(); })
                     .then(function(data) {
                         var s = data.snapshot, c = data.charts;

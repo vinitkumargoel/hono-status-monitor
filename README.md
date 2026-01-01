@@ -3,9 +3,9 @@
 [![npm version](https://img.shields.io/npm/v/hono-status-monitor.svg?style=flat-square)](https://www.npmjs.com/package/hono-status-monitor)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg?style=flat-square)](https://opensource.org/licenses/MIT)
 
-Real-time server monitoring dashboard for **Hono.js** applications with WebSocket updates. Express-status-monitor style metrics powered by Socket.io.
+Real-time server monitoring dashboard for **Hono.js** applications. Works with **Node.js** and **Cloudflare Workers**.
 
-<img width="403" height="736" alt="Screenshot 2026-01-01 at 11 58 25 AM" src="https://github.com/user-attachments/assets/f793b5f0-a10e-4699-98ab-b4708703d024" />
+<img width="403" height="736" alt="Screenshot 2026-01-01 at 11 58 25 AM" src="https://github.com/user-attachments/assets/f793b5f0-a10e-4699-98ab-b4708703d024" />
 
 
 ## ✨ Features
@@ -18,9 +18,10 @@ Real-time server monitoring dashboard for **Hono.js** applications with WebSocke
 | **Error Tracking** | Recent errors with timestamps, paths, and status codes |
 | **Visual Alerts** | Automatic warnings when CPU >80%, Memory >90%, Response >500ms |
 | **Dark Mode** | Toggle with localStorage persistence |
-| **WebSocket Updates** | Real-time updates via Socket.io (1 second interval) |
-| **Pluggable Health Checks** | Optional database/service health monitoring |
-| **Configurable** | Custom thresholds, paths, titles, and more |
+| **Polling Updates** | Configurable polling interval (1s default for Node.js, 5s for edge) |
+| **Edge Support** | Works in Cloudflare Workers and edge runtimes |
+| **Configurable** | Custom thresholds, paths, titles, polling intervals, and more |
+
 
 ## 📦 Installation
 
@@ -56,8 +57,8 @@ app.get('/', (c) => c.text('Hello World!'));
 // Start server
 const server = serve({ fetch: app.fetch, port: 3000 });
 
-// Initialize WebSocket for real-time updates
-monitor.initSocket(server);
+// Optional: initSocket is now a no-op, can be removed
+// monitor.initSocket(server);
 
 console.log('📊 Status monitor: http://localhost:3000/status');
 ```
@@ -72,10 +73,10 @@ const monitor = statusMonitor({
     // Dashboard title (default: 'Server Status')
     title: 'My App Status',
     
-    // Socket.io path (default: '/status/socket.io')
-    socketPath: '/status/socket.io',
+    // Dashboard polling interval in ms (default: 1000 for Node.js, 5000 for edge)
+    pollingInterval: 1000,
     
-    // Metrics update interval in ms (default: 1000)
+    // Metrics collection interval in ms (default: 1000)
     updateInterval: 1000,
     
     // History retention in seconds (default: 60)

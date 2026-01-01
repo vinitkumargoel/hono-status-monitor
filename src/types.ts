@@ -10,9 +10,11 @@ export interface StatusMonitorConfig {
     path?: string;
     /** Dashboard title (default: 'Server Status') */
     title?: string;
-    /** Socket.io path (default: '/status/socket.io') */
+    /** Socket.io path - kept for backwards compatibility (default: '/status/socket.io') */
     socketPath?: string;
-    /** Update interval in milliseconds (default: 1000) */
+    /** Dashboard polling interval in milliseconds (default: 1000 for Node.js, 5000 for edge) */
+    pollingInterval?: number;
+    /** Metrics collection interval in milliseconds (default: 1000) */
     updateInterval?: number;
     /** History retention in seconds (default: 60) */
     retentionSeconds?: number;
@@ -226,6 +228,7 @@ export interface DashboardProps {
     uptime: string;
     socketPath: string;
     title: string;
+    pollingInterval?: number;
 }
 
 /**

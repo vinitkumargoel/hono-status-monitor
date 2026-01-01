@@ -29,6 +29,7 @@ const DEFAULT_CONFIG: Required<StatusMonitorConfig> = {
     path: '/status',
     title: 'Server Status',
     socketPath: '/status/socket.io', // Kept for compatibility, but not used
+    pollingInterval: 1000, // Dashboard polling interval
     updateInterval: 1000,
     retentionSeconds: 60,
     maxRecentErrors: 10,
