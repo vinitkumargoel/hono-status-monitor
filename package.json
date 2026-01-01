@@ -1,10 +1,22 @@
 {
     "name": "hono-status-monitor",
-    "version": "1.0.2",
+    "version": "1.0.3",
     "description": "Real-time server monitoring dashboard for Hono.js with WebSocket updates. Works with Node.js and Cloudflare Workers. Express-status-monitor style metrics.",
     "main": "dist/index.js",
     "types": "dist/index.d.ts",
     "type": "module",
+    "exports": {
+        ".": {
+            "types": "./dist/index.d.ts",
+            "import": "./dist/index.js",
+            "require": "./dist/index.js"
+        },
+        "./edge": {
+            "types": "./dist/index-edge.d.ts",
+            "import": "./dist/index-edge.js",
+            "require": "./dist/index-edge.js"
+        }
+    },
     "files": [
         "dist"
     ],
@@ -41,16 +53,21 @@
         "url": "https://github.com/vinitkumargoel/hono-status-monitor/issues"
     },
     "peerDependencies": {
-        "@hono/node-server": ">=1.0.0",
         "hono": ">=4.0.0"
     },
-    "dependencies": {
+    "peerDependenciesMeta": {
+        "@hono/node-server": {
+            "optional": true
+        }
+    },
+    "optionalDependencies": {
         "socket.io": "^4.7.0"
     },
     "devDependencies": {
         "@hono/node-server": "^1.19.0",
         "@types/node": "^20.0.0",
         "hono": "^4.6.0",
+        "socket.io": "^4.7.0",
         "typescript": "^5.3.0",
         "vitest": "^4.0.16"
     },

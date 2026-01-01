@@ -368,7 +368,7 @@ app.route('/status', monitor.routes);
 
 ## ☁️ Cloudflare Workers / Edge Support
 
-This package automatically detects Cloudflare Workers and edge runtimes, providing a lightweight monitor with available metrics.
+This package provides a separate edge entry point that has **zero Node.js dependencies**.
 
 ### Available Metrics in Edge Environments
 
@@ -386,13 +386,16 @@ This package automatically detects Cloudflare Workers and edge runtimes, providi
 
 ### Usage in Cloudflare Workers
 
+> **Important:** Use the `/edge` import path for Cloudflare Workers!
+
 ```typescript
 import { Hono } from 'hono';
-import { statusMonitor } from 'hono-status-monitor';
+// Use the edge-specific import (no Node.js dependencies)
+import { statusMonitor } from 'hono-status-monitor/edge';
 
 const app = new Hono();
 
-// Create status monitor - automatically detects edge environment
+// Create status monitor
 const monitor = statusMonitor();
 
 // Add middleware to track requests
@@ -407,16 +410,16 @@ app.get('/', (c) => c.text('Hello from Cloudflare Workers!'));
 export default app;
 ```
 
-> **Note:** In Cloudflare Workers, the dashboard uses HTTP polling (every 5 seconds) instead of WebSocket for updates. The dashboard will display an "Edge Mode" indicator.
+> **Note:** In edge environments, the dashboard uses HTTP polling (every 5 seconds) instead of WebSocket for updates. The dashboard will display an "Edge Mode" indicator.
 
-### Force Edge Mode
+### Force Edge Mode in Node.js
 
-You can explicitly use the edge-compatible monitor:
+You can also use the edge-compatible monitor in Node.js if you don't need system metrics:
 
 ```typescript
-import { statusMonitorEdge } from 'hono-status-monitor';
+import { statusMonitor } from 'hono-status-monitor/edge';
 
-const monitor = statusMonitorEdge();
+const monitor = statusMonitor();
 ```
 
 ## 📋 Requirements
