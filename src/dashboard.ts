@@ -468,13 +468,15 @@ export interface EdgeDashboardProps {
     hostname: string;
     uptime: string;
     title: string;
+    pollingInterval?: number;
 }
 
 /**
  * Generate the edge-compatible status dashboard HTML
  * Uses polling instead of WebSocket, only shows available metrics
  */
-export function generateEdgeDashboard({ hostname, uptime, title }: EdgeDashboardProps): string {
+export function generateEdgeDashboard({ hostname, uptime, title, pollingInterval = 5000 }: EdgeDashboardProps): string {
+    const pollingSeconds = Math.round(pollingInterval / 1000);
     return `<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -683,7 +685,7 @@ export function generateEdgeDashboard({ hostname, uptime, title }: EdgeDashboard
 
         <div class="edge-notice">
             <strong>☁️ Running in Edge/Cloudflare Workers Mode</strong>
-            System metrics (CPU, Memory, Heap) are not available. Dashboard updates via polling every 5 seconds.
+            System metrics (CPU, Memory, Heap) are not available. Dashboard updates via polling every ${pollingSeconds} second${pollingSeconds !== 1 ? 's' : ''}.
         </div>
 
         <div class="stats-bar">
@@ -856,7 +858,8 @@ export function generateEdgeDashboard({ hostname, uptime, title }: EdgeDashboard
             fetchMetrics();
 
             // Poll every 5 seconds
-            setInterval(fetchMetrics, 5000);
+            // Poll at configured interval
+            setInterval(fetchMetrics, ${pollingInterval});
         })();
     </script>
 </body>

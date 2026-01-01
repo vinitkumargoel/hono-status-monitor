@@ -1,6 +1,6 @@
 {
     "name": "hono-status-monitor",
-    "version": "1.0.5",
+    "version": "1.0.6",
     "description": "Real-time server monitoring dashboard for Hono.js. Works with Node.js and Cloudflare Workers. Express-status-monitor style metrics with polling updates.",
     "main": "dist/index.js",
     "types": "dist/index.d.ts",

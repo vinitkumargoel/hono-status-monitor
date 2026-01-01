@@ -383,7 +383,7 @@ This package provides a separate edge entry point that has **zero Node.js depend
 | CPU / Memory / Heap | ❌ | Not available in Workers |
 | Event loop lag | ❌ | Not available in Workers |
 | Load average | ❌ | Not available in Workers |
-| WebSocket real-time | ❌ | Uses polling (5s interval) |
+| WebSocket real-time | ❌ | Uses polling (configurable, default 5s) |
 
 ### Usage in Cloudflare Workers
 
@@ -396,8 +396,10 @@ import { statusMonitor } from 'hono-status-monitor/edge';
 
 const app = new Hono();
 
-// Create status monitor
-const monitor = statusMonitor();
+// Create status monitor with custom polling interval
+const monitor = statusMonitor({
+    pollingInterval: 3000  // Update dashboard every 3 seconds (default: 5000)
+});
 
 // Add middleware to track requests
 app.use('*', monitor.middleware);
@@ -411,7 +413,7 @@ app.get('/', (c) => c.text('Hello from Cloudflare Workers!'));
 export default app;
 ```
 
-> **Note:** In edge environments, the dashboard uses HTTP polling (every 5 seconds) instead of WebSocket for updates. The dashboard will display an "Edge Mode" indicator.
+> **Note:** In edge environments, the dashboard uses HTTP polling instead of WebSocket for updates. The polling interval is configurable via `pollingInterval` (defaults to 5 seconds for edge, 1 second for Node.js).
 
 ### Force Edge Mode in Node.js
 

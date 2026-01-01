@@ -72,7 +72,8 @@ export function statusMonitor(config: StatusMonitorConfig = {}) {
         const html = generateEdgeDashboard({
             hostname: snapshot.hostname,
             uptime: monitor.formatUptime(snapshot.uptime),
-            title: monitor.config.title
+            title: monitor.config.title,
+            pollingInterval: monitor.config.pollingInterval
         });
         return c.html(html);
     });
