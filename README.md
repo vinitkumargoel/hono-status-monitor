@@ -5,7 +5,8 @@
 
 Real-time server monitoring dashboard for **Hono.js** applications with WebSocket updates. Express-status-monitor style metrics powered by Socket.io.
 
-![Status Monitor Dashboard](https://via.placeholder.com/800x450/1a1a1a/fff?text=Status+Monitor+Dashboard)
+<img width="403" height="736" alt="Screenshot 2026-01-01 at 11 58 25 AM" src="https://github.com/user-attachments/assets/f793b5f0-a10e-4699-98ab-b4708703d024" />
+
 
 ## ✨ Features
 
