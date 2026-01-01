@@ -17,8 +17,16 @@ import type {
     GCStats,
     DatabaseStats,
     MetricsSnapshot,
-    ChartData
+    ChartData,
+    WorkerMetricsMessage
 } from './types.js';
+import {
+    isClusterWorker,
+    sendMetricsToMaster,
+    createClusterAggregator,
+    getWorkerId,
+    type ClusterAggregator
+} from './cluster.js';
 
 // Default configuration
 const DEFAULT_CONFIG: Required<StatusMonitorConfig> = {
@@ -37,7 +45,8 @@ const DEFAULT_CONFIG: Required<StatusMonitorConfig> = {
         eventLoopLag: 100
     },
     healthCheck: async () => ({ connected: true, latencyMs: 0 }),
-    normalizePath: (path: string) => path
+    normalizePath: (path: string) => path,
+    clusterMode: undefined as unknown as boolean // Will be auto-detected
 };
 
 /**
@@ -60,13 +69,20 @@ function defaultNormalizePath(path: string): string {
  * Create a status monitor instance
  */
 export function createMonitor(userConfig: StatusMonitorConfig = {}) {
+    // Detect cluster mode: user config > auto-detect
+    const inClusterMode = userConfig.clusterMode ?? isClusterWorker();
+
     // Merge configuration
     const config: Required<StatusMonitorConfig> = {
         ...DEFAULT_CONFIG,
         ...userConfig,
         alerts: { ...DEFAULT_CONFIG.alerts, ...userConfig.alerts },
-        normalizePath: userConfig.normalizePath || defaultNormalizePath
+        normalizePath: userConfig.normalizePath || defaultNormalizePath,
+        clusterMode: inClusterMode
     };
+
+    // Create cluster aggregator for collecting metrics from workers
+    const clusterAggregator: ClusterAggregator | null = inClusterMode ? createClusterAggregator() : null;
 
     // In-memory metrics storage
     let cpuHistory: MetricDataPoint[] = [];
@@ -372,13 +388,27 @@ export function createMonitor(userConfig: StatusMonitorConfig = {}) {
             responseTimeSamples = responseTimeSamples.slice(-500);
         }
 
-        // Broadcast to connected clients
+        // In cluster mode, send metrics to master for aggregation
+        if (config.clusterMode && process.send) {
+            const dbStats = await getDatabaseStats();
+            const snapshot = await getMetricsSnapshot(dbStats);
+            const charts = getChartData();
+            sendMetricsToMaster(snapshot, charts);
+        }
+
+        // Broadcast to connected clients (only if we have socket.io - typically only in master)
         if (io) {
             const dbStats = await getDatabaseStats();
-            io.emit('metrics', {
-                snapshot: await getMetricsSnapshot(dbStats),
-                charts: getChartData()
-            });
+            let snapshot = await getMetricsSnapshot(dbStats);
+            let charts = getChartData();
+
+            // If we have a cluster aggregator, use aggregated data
+            if (clusterAggregator && clusterAggregator.workerCount > 0) {
+                snapshot = clusterAggregator.aggregateMetrics(snapshot);
+                charts = clusterAggregator.aggregateCharts(charts);
+            }
+
+            io.emit('metrics', { snapshot, charts });
         }
     }
 
@@ -578,7 +608,24 @@ export function createMonitor(userConfig: StatusMonitorConfig = {}) {
             });
         });
 
-        console.log('📊 Status monitor WebSocket initialized');
+        // Set up IPC message handler for cluster mode
+        if (config.clusterMode && clusterAggregator) {
+            process.on('message', (message: unknown) => {
+                // Handle worker metrics messages
+                if (
+                    message &&
+                    typeof message === 'object' &&
+                    'type' in message &&
+                    (message as WorkerMetricsMessage).type === 'worker-metrics'
+                ) {
+                    clusterAggregator.updateWorkerMetrics(message as WorkerMetricsMessage);
+                }
+            });
+            console.log('📊 Status monitor WebSocket initialized (cluster mode - aggregating workers)');
+        } else {
+            console.log('📊 Status monitor WebSocket initialized');
+        }
+
         return io;
     }
 

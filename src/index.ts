@@ -15,6 +15,12 @@ export * from './types.js';
 export { createMonitor, type Monitor } from './monitor.js';
 export { createMiddleware } from './middleware.js';
 export { generateDashboard } from './dashboard.js';
+export {
+    isClusterWorker,
+    isClusterMaster,
+    getWorkerId,
+    createClusterAggregator
+} from './cluster.js';
 
 /**
  * Create a complete status monitor with routes, middleware, and WebSocket

@@ -28,6 +28,8 @@ export interface StatusMonitorConfig {
     healthCheck?: () => Promise<HealthCheckResult>;
     /** Custom path normalization function */
     normalizePath?: (path: string) => string;
+    /** Enable cluster mode for PM2/multi-process aggregation (auto-detected if not set) */
+    clusterMode?: boolean;
 }
 
 /**
@@ -173,6 +175,33 @@ export interface MetricsSnapshot {
     database: DatabaseStats;
     rateLimitStats: { blocked: number; total: number };
     errorRate: number;
+    /** Worker info for cluster mode */
+    workers?: WorkerInfo[];
+    /** Number of workers in cluster mode */
+    workerCount?: number;
+}
+
+/**
+ * Worker info for cluster mode
+ */
+export interface WorkerInfo {
+    pid: number;
+    cpu: number;
+    memoryMB: number;
+    rps: number;
+    totalRequests: number;
+    responseTime: number;
+}
+
+/**
+ * IPC message from worker to master
+ */
+export interface WorkerMetricsMessage {
+    type: 'worker-metrics';
+    workerId: number;
+    pid: number;
+    metrics: Partial<MetricsSnapshot>;
+    charts: ChartData;
 }
 
 /**

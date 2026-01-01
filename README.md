@@ -112,7 +112,10 @@ const monitor = statusMonitor({
         return path
             .replace(/\/users\/\d+/g, '/users/:id')
             .replace(/\/posts\/[a-f0-9]{24}/g, '/posts/:id');
-    }
+    },
+    
+    // Enable cluster mode for PM2 (auto-detected by default)
+    clusterMode: true
 });
 ```
 
@@ -281,6 +284,67 @@ const monitor = statusMonitor({
     }
 });
 ```
+
+### PM2 / Cluster Mode Support
+
+To enable metrics aggregation across multiple processes (Cluster Mode), you need a specific entry point script that handles message relaying between workers.
+
+1. **Create a `cluster.ts` (or `.js`) entry file:**
+
+```typescript
+import cluster from 'node:cluster';
+import * as os from 'node:os';
+import { dirname } from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+const __dirname = dirname(fileURLToPath(import.meta.url));
+const numCPUs = os.cpus().length;
+
+if (cluster.isPrimary) {
+    console.log(`Primary ${process.pid} is running`);
+
+    // Fork workers
+    for (let i = 0; i < numCPUs; i++) {
+        const worker = cluster.fork();
+        
+        // Relay messages between workers
+        worker.on('message', (message) => {
+            if (message?.type === 'worker-metrics') {
+                // Broadcast to all workers (including sender)
+                for (const id in cluster.workers) {
+                    cluster.workers[id]?.send(message);
+                }
+            }
+        });
+    }
+
+    cluster.on('exit', (worker) => {
+        console.log(`worker ${worker.process.pid} died`);
+        // Replace dead worker
+        const newWorker = cluster.fork();
+        newWorker.on('message', (message) => {
+            if (message?.type === 'worker-metrics') {
+                for (const id in cluster.workers) {
+                    cluster.workers[id]?.send(message);
+                }
+            }
+        });
+    });
+} else {
+    // Workers share the TCP connection in this file
+    await import('./index'); // Path to your main app file
+}
+```
+
+2. **Run this cluster script with PM2:**
+
+```bash
+# Start the cluster script as a SINGLE PM2 instance
+# (The script itself manages the worker processes)
+pm2 start cluster.ts --name my-app
+```
+
+**Note:** Do NOT use `pm2 start app.ts -i max` directly, as PM2's default isolation prevents workers from sharing metrics without an external adapter (like Redis). Using the script above provides a zero-dependency aggregation solution.
 
 ## 🛡️ Security Considerations
 
