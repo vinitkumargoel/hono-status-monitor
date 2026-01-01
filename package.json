@@ -28,6 +28,7 @@
         "express-status-monitor"
     ],
     "author": "Vinit Kumar Goel",
+    "email": "vinit928@gmail.com",
     "license": "MIT",
     "repository": {
         "type": "git",
