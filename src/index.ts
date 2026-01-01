@@ -9,6 +9,8 @@ import type { StatusMonitorConfig } from './types.js';
 import { isNodeEnvironment, detectPlatform } from './platform.js';
 import { createEdgeMonitor } from './monitor-edge.js';
 import { generateDashboard, generateEdgeDashboard } from './dashboard.js';
+import { createMonitor } from './monitor.js';
+import { createMiddleware } from './middleware.js';
 
 // Re-export types
 export * from './types.js';
@@ -86,9 +88,7 @@ export function statusMonitor(config: StatusMonitorConfig = {}) {
  * Requires Node.js runtime with os, process, http modules
  */
 function createNodeStatusMonitor(config: StatusMonitorConfig = {}) {
-    // Dynamic import to avoid loading Node.js modules in edge
-    const { createMonitor } = require('./monitor.js');
-    const { createMiddleware } = require('./middleware.js');
+    // Uses static imports from top of file
     type HttpServer = import('http').Server;
 
     const monitor = createMonitor(config);
@@ -123,8 +123,8 @@ function createNodeStatusMonitor(config: StatusMonitorConfig = {}) {
         middleware,
         /** Pre-configured Hono routes for dashboard and API */
         routes,
-        /** Initialize Socket.io on the HTTP server for real-time updates */
-        initSocket: (server: HttpServer) => monitor.initSocket(server),
+        /** Initialize server - returns null (kept for backwards compatibility) */
+        initSocket: (_server?: any) => monitor.initSocket(),
         /** Track rate limit events for the dashboard */
         trackRateLimit: (blocked: boolean) => monitor.trackRateLimitEvent(blocked),
         /** Get current metrics snapshot */
