@@ -2,8 +2,6 @@
 // HONO STATUS MONITOR - TYPE DEFINITIONS
 // =============================================================================
 
-import type { Server as SocketServer } from 'socket.io';
-
 /**
  * Configuration options for the status monitor
  */
@@ -236,8 +234,8 @@ export interface DashboardProps {
 export interface StatusMonitor {
     /** Hono middleware for tracking requests */
     middleware: (c: any, next: () => Promise<void>) => Promise<void>;
-    /** Initialize socket.io server */
-    initSocket: (server: any) => SocketServer;
+    /** Initialize server (returns null, kept for backwards compatibility) */
+    initSocket: (server: any) => null;
     /** Get current metrics snapshot */
     getMetrics: () => Promise<MetricsSnapshot>;
     /** Get chart data */

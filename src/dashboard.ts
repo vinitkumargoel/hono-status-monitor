@@ -15,7 +15,6 @@ export function generateDashboard({ hostname, uptime, socketPath, title }: Dashb
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>${title}</title>
-    <script src="https://cdn.socket.io/4.7.5/socket.io.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/chartjs-adapter-date-fns@3.0.0/dist/chartjs-adapter-date-fns.bundle.min.js"></script>
     <style>
@@ -212,8 +211,8 @@ export function generateDashboard({ hostname, uptime, socketPath, title }: Dashb
             </div>
             <div class="header-controls">
                 <button class="theme-toggle" onclick="toggleTheme()" title="Toggle dark mode">🌓</button>
-                <div class="status-badge disconnected" id="connBadge">
-                    <span id="connText">Connecting</span>
+                <div class="status-badge connected" id="connBadge">
+                    <span id="connText">Polling</span>
                 </div>
             </div>
         </header>
@@ -323,7 +322,6 @@ export function generateDashboard({ hostname, uptime, socketPath, title }: Dashb
                 localStorage.setItem('statusDark', document.body.classList.contains('dark'));
             };
 
-            var chartColor = isDark ? '#666' : '#333';
             var gridColor = isDark ? '#2a2a2a' : '#f0f0f0';
 
             var chartConfig = {
@@ -390,70 +388,77 @@ export function generateDashboard({ hostname, uptime, socketPath, title }: Dashb
                 document.getElementById('errorRate').style.color = alerts.errorRate ? 'var(--danger)' : '';
             }
 
-            var connBadge = document.getElementById('connBadge'), connText = document.getElementById('connText');
+            function fetchMetrics() {
+                fetch('./api/metrics')
+                    .then(function(res) { return res.json(); })
+                    .then(function(data) {
+                        var s = data.snapshot, c = data.charts;
 
-            var socket = io(window.location.origin, { path: '${socketPath}', transports: ['websocket', 'polling'] });
+                        document.getElementById('cpuVal').textContent = s.cpu.toFixed(1);
+                        document.getElementById('memVal').textContent = s.memoryMB.toFixed(0);
+                        document.getElementById('heapVal').textContent = s.heapUsedMB.toFixed(1);
+                        document.getElementById('loadVal').textContent = s.loadAvg.toFixed(2);
+                        document.getElementById('rtVal').textContent = s.responseTime.toFixed(1);
+                        document.getElementById('rpsVal').textContent = s.rps.toFixed(1);
+                        document.getElementById('lagVal').textContent = s.eventLoopLag.toFixed(1);
 
-            socket.on('connect', function() { connBadge.className = 'status-badge connected'; connText.textContent = 'Live'; });
-            socket.on('disconnect', function() { connBadge.className = 'status-badge disconnected'; connText.textContent = 'Offline'; });
+                        document.getElementById('uptime').textContent = formatUptime(s.processUptime);
+                        document.getElementById('totalReq').textContent = s.totalRequests.toLocaleString();
+                        document.getElementById('activeConn').textContent = s.activeConnections;
+                        document.getElementById('errorRate').textContent = s.errorRate.toFixed(1) + '%';
 
-            socket.on('metrics', function(data) {
-                var s = data.snapshot, c = data.charts;
+                        document.getElementById('pAvg').textContent = s.percentiles.avg.toFixed(1) + 'ms';
+                        document.getElementById('p50').textContent = s.percentiles.p50.toFixed(1) + 'ms';
+                        document.getElementById('p95').textContent = s.percentiles.p95.toFixed(1) + 'ms';
+                        document.getElementById('p99').textContent = s.percentiles.p99.toFixed(1) + 'ms';
 
-                document.getElementById('cpuVal').textContent = s.cpu.toFixed(1);
-                document.getElementById('memVal').textContent = s.memoryMB.toFixed(0);
-                document.getElementById('heapVal').textContent = s.heapUsedMB.toFixed(1);
-                document.getElementById('loadVal').textContent = s.loadAvg.toFixed(2);
-                document.getElementById('rtVal').textContent = s.responseTime.toFixed(1);
-                document.getElementById('rpsVal').textContent = s.rps.toFixed(1);
-                document.getElementById('lagVal').textContent = s.eventLoopLag.toFixed(1);
+                        if (c.cpu) updateChart(charts.cpu, c.cpu);
+                        if (c.memory) updateChart(charts.mem, c.memory);
+                        if (c.heap) updateChart(charts.heap, c.heap);
+                        if (c.loadAvg) updateChart(charts.load, c.loadAvg);
+                        if (c.responseTime) updateChart(charts.rt, c.responseTime);
+                        if (c.rps) updateChart(charts.rps, c.rps);
+                        if (c.eventLoopLag) updateChart(charts.lag, c.eventLoopLag);
 
-                document.getElementById('uptime').textContent = formatUptime(s.processUptime);
-                document.getElementById('totalReq').textContent = s.totalRequests.toLocaleString();
-                document.getElementById('activeConn').textContent = s.activeConnections;
-                document.getElementById('errorRate').textContent = s.errorRate.toFixed(1) + '%';
+                        renderRoutes('topRoutes', s.topRoutes, 'count', false);
+                        renderRoutes('slowRoutes', s.slowestRoutes, 'avgTime', true);
 
-                document.getElementById('pAvg').textContent = s.percentiles.avg.toFixed(1) + 'ms';
-                document.getElementById('p50').textContent = s.percentiles.p50.toFixed(1) + 'ms';
-                document.getElementById('p95').textContent = s.percentiles.p95.toFixed(1) + 'ms';
-                document.getElementById('p99').textContent = s.percentiles.p99.toFixed(1) + 'ms';
+                        document.getElementById('s2xx').textContent = sumCodes(s.statusCodes, '2');
+                        document.getElementById('s3xx').textContent = sumCodes(s.statusCodes, '3');
+                        document.getElementById('s4xx').textContent = sumCodes(s.statusCodes, '4');
+                        document.getElementById('s5xx').textContent = sumCodes(s.statusCodes, '5');
+                        document.getElementById('rateLimited').textContent = s.rateLimitStats.blocked;
 
-                if (c.cpu) updateChart(charts.cpu, c.cpu);
-                if (c.memory) updateChart(charts.mem, c.memory);
-                if (c.heap) updateChart(charts.heap, c.heap);
-                if (c.loadAvg) updateChart(charts.load, c.loadAvg);
-                if (c.responseTime) updateChart(charts.rt, c.responseTime);
-                if (c.rps) updateChart(charts.rps, c.rps);
-                if (c.eventLoopLag) updateChart(charts.lag, c.eventLoopLag);
+                        renderErrors(s.recentErrors);
+                        applyAlertColors(s.alerts);
 
-                renderRoutes('topRoutes', s.topRoutes, 'count', false);
-                renderRoutes('slowRoutes', s.slowestRoutes, 'avgTime', true);
+                        document.getElementById('dbLatency').textContent = s.database.latencyMs.toFixed(1) + 'ms';
+                        document.getElementById('dbStatus').textContent = s.database.connected ? 'Connected' : 'Disconnected';
+                        document.getElementById('dbStatus').className = 'status ' + (s.database.connected ? 'ok' : 'error');
+                        document.getElementById('heapTotal').textContent = s.heapTotalMB.toFixed(0);
+                        document.getElementById('heapGrowth').textContent = s.gc.heapGrowthRate.toFixed(2);
 
-                document.getElementById('s2xx').textContent = sumCodes(s.statusCodes, '2');
-                document.getElementById('s3xx').textContent = sumCodes(s.statusCodes, '3');
-                document.getElementById('s4xx').textContent = sumCodes(s.statusCodes, '4');
-                document.getElementById('s5xx').textContent = sumCodes(s.statusCodes, '5');
-                document.getElementById('rateLimited').textContent = s.rateLimitStats.blocked;
+                        document.getElementById('nodeVer').textContent = s.nodeVersion;
+                        document.getElementById('platform').textContent = s.platform.split(' ')[0];
+                        document.getElementById('pid').textContent = s.pid;
+                        document.getElementById('cpuCount').textContent = s.cpuCount;
+                    })
+                    .catch(function(err) {
+                        console.error('Failed to fetch metrics:', err);
+                    });
+            }
 
-                renderErrors(s.recentErrors);
-                applyAlertColors(s.alerts);
+            // Initial fetch
+            fetchMetrics();
 
-                document.getElementById('dbLatency').textContent = s.database.latencyMs.toFixed(1) + 'ms';
-                document.getElementById('dbStatus').textContent = s.database.connected ? 'Connected' : 'Disconnected';
-                document.getElementById('dbStatus').className = 'status ' + (s.database.connected ? 'ok' : 'error');
-                document.getElementById('heapTotal').textContent = s.heapTotalMB.toFixed(0);
-                document.getElementById('heapGrowth').textContent = s.gc.heapGrowthRate.toFixed(2);
-
-                document.getElementById('nodeVer').textContent = s.nodeVersion;
-                document.getElementById('platform').textContent = s.platform.split(' ')[0];
-                document.getElementById('pid').textContent = s.pid;
-                document.getElementById('cpuCount').textContent = s.cpuCount;
-            });
+            // Poll every second
+            setInterval(fetchMetrics, 1000);
         })();
     </script>
 </body>
 </html>`;
 }
+
 
 /**
  * Edge Dashboard Props (no socketPath)

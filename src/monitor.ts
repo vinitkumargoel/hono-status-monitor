@@ -1,11 +1,9 @@
 // =============================================================================
 // HONO STATUS MONITOR - CORE METRICS SERVICE
-// Real-time server metrics collection with WebSocket broadcasting
+// Real-time server metrics collection (polling-based, no external dependencies)
 // =============================================================================
 
 import * as os from 'os';
-import type { Server as HttpServer } from 'http';
-import { Server as SocketServer } from 'socket.io';
 import type {
     StatusMonitorConfig,
     MetricDataPoint,
@@ -14,7 +12,6 @@ import type {
     ErrorEntry,
     PercentileData,
     AlertStatus,
-    GCStats,
     DatabaseStats,
     MetricsSnapshot,
     ChartData,
@@ -24,7 +21,6 @@ import {
     isClusterWorker,
     sendMetricsToMaster,
     createClusterAggregator,
-    getWorkerId,
     type ClusterAggregator
 } from './cluster.js';
 
@@ -32,7 +28,7 @@ import {
 const DEFAULT_CONFIG: Required<StatusMonitorConfig> = {
     path: '/status',
     title: 'Server Status',
-    socketPath: '/status/socket.io',
+    socketPath: '/status/socket.io', // Kept for compatibility, but not used
     updateInterval: 1000,
     retentionSeconds: 60,
     maxRecentErrors: 10,
@@ -51,17 +47,12 @@ const DEFAULT_CONFIG: Required<StatusMonitorConfig> = {
 
 /**
  * Default path normalization function
- * Groups similar routes together for analytics
  */
 function defaultNormalizePath(path: string): string {
     return path
-        // Replace UUIDs
         .replace(/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/gi, ':uuid')
-        // Replace MongoDB ObjectIds (24 hex characters)
         .replace(/[0-9a-f]{24}/gi, ':id')
-        // Replace numeric IDs
         .replace(/\/\d+/g, '/:id')
-        // Limit path depth to prevent explosion
         .split('/').slice(0, 4).join('/');
 }
 
@@ -69,10 +60,8 @@ function defaultNormalizePath(path: string): string {
  * Create a status monitor instance
  */
 export function createMonitor(userConfig: StatusMonitorConfig = {}) {
-    // Detect cluster mode: user config > auto-detect
     const inClusterMode = userConfig.clusterMode ?? isClusterWorker();
 
-    // Merge configuration
     const config: Required<StatusMonitorConfig> = {
         ...DEFAULT_CONFIG,
         ...userConfig,
@@ -81,7 +70,6 @@ export function createMonitor(userConfig: StatusMonitorConfig = {}) {
         clusterMode: inClusterMode
     };
 
-    // Create cluster aggregator for collecting metrics from workers
     const clusterAggregator: ClusterAggregator | null = inClusterMode ? createClusterAggregator() : null;
 
     // In-memory metrics storage
@@ -127,15 +115,9 @@ export function createMonitor(userConfig: StatusMonitorConfig = {}) {
     // Database latency tracking
     let dbLatency = 0;
 
-    // WebSocket server reference
-    let io: SocketServer | null = null;
-
     // Metrics collection interval
     let metricsInterval: ReturnType<typeof setInterval> | null = null;
 
-    /**
-     * Calculate CPU usage percentage
-     */
     function calculateCpuUsage(): number {
         const cpus = os.cpus();
 
@@ -169,9 +151,6 @@ export function createMonitor(userConfig: StatusMonitorConfig = {}) {
         return Math.round(((totalTick - totalIdle) / totalTick) * 1000) / 10;
     }
 
-    /**
-     * Get memory usage in MB
-     */
     function getMemoryMB(): number {
         const totalMem = os.totalmem();
         const freeMem = os.freemem();
@@ -179,9 +158,6 @@ export function createMonitor(userConfig: StatusMonitorConfig = {}) {
         return Math.round((usedMem / (1024 * 1024)) * 10) / 10;
     }
 
-    /**
-     * Get memory usage percentage
-     */
     function getMemoryPercent(): number {
         const totalMem = os.totalmem();
         const freeMem = os.freemem();
@@ -189,14 +165,10 @@ export function createMonitor(userConfig: StatusMonitorConfig = {}) {
         return Math.round((usedMem / totalMem) * 1000) / 10;
     }
 
-    /**
-     * Get heap memory usage and track growth
-     */
     function getHeapUsage(): { used: number; total: number } {
         const mem = process.memoryUsage();
         const used = Math.round((mem.heapUsed / (1024 * 1024)) * 10) / 10;
 
-        // Track heap growth
         if (lastHeapUsed > 0) {
             heapGrowthRate = used - lastHeapUsed;
         }
@@ -208,17 +180,11 @@ export function createMonitor(userConfig: StatusMonitorConfig = {}) {
         };
     }
 
-    /**
-     * Get 1-minute load average
-     */
     function getLoadAverage(): number {
         const loadAvg = os.loadavg();
         return Math.round(loadAvg[0] * 100) / 100;
     }
 
-    /**
-     * Measure event loop lag
-     */
     function measureEventLoopLag(): number {
         const now = Date.now();
         const expectedInterval = config.updateInterval;
@@ -229,9 +195,6 @@ export function createMonitor(userConfig: StatusMonitorConfig = {}) {
         return Math.round(lag * 10) / 10;
     }
 
-    /**
-     * Calculate percentiles from samples
-     */
     function calculatePercentiles(): PercentileData {
         if (responseTimeSamples.length === 0) {
             return { p50: 0, p95: 0, p99: 0, avg: 0 };
@@ -254,18 +217,12 @@ export function createMonitor(userConfig: StatusMonitorConfig = {}) {
         };
     }
 
-    /**
-     * Get top routes by request count
-     */
     function getTopRoutes(): RouteStats[] {
         return Array.from(routeStats.values())
             .sort((a, b) => b.count - a.count)
             .slice(0, config.maxRoutes);
     }
 
-    /**
-     * Get slowest routes by average response time
-     */
     function getSlowestRoutes(): RouteStats[] {
         return Array.from(routeStats.values())
             .filter(r => r.count > 0)
@@ -273,9 +230,6 @@ export function createMonitor(userConfig: StatusMonitorConfig = {}) {
             .slice(0, config.maxRoutes);
     }
 
-    /**
-     * Get routes with most errors
-     */
     function getErrorRoutes(): RouteStats[] {
         return Array.from(routeStats.values())
             .filter(r => r.errors > 0)
@@ -283,18 +237,12 @@ export function createMonitor(userConfig: StatusMonitorConfig = {}) {
             .slice(0, config.maxRoutes);
     }
 
-    /**
-     * Calculate current error rate
-     */
     function getErrorRate(): number {
         const totalErrors = Array.from(routeStats.values()).reduce((sum, r) => sum + r.errors, 0);
         if (totalRequests === 0) return 0;
         return Math.round((totalErrors / totalRequests) * 10000) / 100;
     }
 
-    /**
-     * Check alert conditions
-     */
     function checkAlerts(): AlertStatus {
         const cpu = cpuHistory.length > 0 ? cpuHistory[cpuHistory.length - 1].value : 0;
         const memory = getMemoryPercent();
@@ -311,9 +259,6 @@ export function createMonitor(userConfig: StatusMonitorConfig = {}) {
         };
     }
 
-    /**
-     * Get database stats using custom health check
-     */
     async function getDatabaseStats(): Promise<DatabaseStats> {
         try {
             const start = performance.now();
@@ -339,9 +284,6 @@ export function createMonitor(userConfig: StatusMonitorConfig = {}) {
         }
     }
 
-    /**
-     * Add a data point to history
-     */
     function addToHistory(history: MetricDataPoint[], value: number): void {
         const now = Date.now();
         history.push({ timestamp: now, value });
@@ -352,15 +294,11 @@ export function createMonitor(userConfig: StatusMonitorConfig = {}) {
         }
     }
 
-    /**
-     * Update metrics and broadcast via WebSocket
-     */
     async function updateMetrics(): Promise<void> {
         const heap = getHeapUsage();
         const eventLoopLag = measureEventLoopLag();
         const errorRate = getErrorRate();
 
-        // System metrics
         addToHistory(cpuHistory, calculateCpuUsage());
         addToHistory(memoryHistory, getMemoryMB());
         addToHistory(heapHistory, heap.used);
@@ -368,22 +306,18 @@ export function createMonitor(userConfig: StatusMonitorConfig = {}) {
         addToHistory(eventLoopLagHistory, eventLoopLag);
         addToHistory(errorRateHistory, errorRate);
 
-        // Request metrics
         const currentRps = requestCount - lastRequestCount;
         lastRequestCount = requestCount;
         addToHistory(rpsHistory, currentRps);
 
-        // Average response time
         const avgResponseTime = responseTimeCount > 0
             ? Math.round((totalResponseTime / responseTimeCount) * 100) / 100
             : 0;
         addToHistory(responseTimeHistory, avgResponseTime);
 
-        // Reset response time tracking
         totalResponseTime = 0;
         responseTimeCount = 0;
 
-        // Trim response time samples (keep last 1000)
         if (responseTimeSamples.length > 1000) {
             responseTimeSamples = responseTimeSamples.slice(-500);
         }
@@ -395,26 +329,8 @@ export function createMonitor(userConfig: StatusMonitorConfig = {}) {
             const charts = getChartData();
             sendMetricsToMaster(snapshot, charts);
         }
-
-        // Broadcast to connected clients (only if we have socket.io - typically only in master)
-        if (io) {
-            const dbStats = await getDatabaseStats();
-            let snapshot = await getMetricsSnapshot(dbStats);
-            let charts = getChartData();
-
-            // If we have a cluster aggregator, use aggregated data
-            if (clusterAggregator && clusterAggregator.workerCount > 0) {
-                snapshot = clusterAggregator.aggregateMetrics(snapshot);
-                charts = clusterAggregator.aggregateCharts(charts);
-            }
-
-            io.emit('metrics', { snapshot, charts });
-        }
     }
 
-    /**
-     * Get current metrics snapshot
-     */
     async function getMetricsSnapshot(dbStats?: DatabaseStats): Promise<MetricsSnapshot> {
         const heap = getHeapUsage();
         const db = dbStats || await getDatabaseStats();
@@ -432,9 +348,7 @@ export function createMonitor(userConfig: StatusMonitorConfig = {}) {
             responseTime: responseTimeHistory.length > 0
                 ? responseTimeHistory[responseTimeHistory.length - 1].value
                 : 0,
-            rps: rpsHistory.length > 0
-                ? rpsHistory[rpsHistory.length - 1].value
-                : 0,
+            rps: rpsHistory.length > 0 ? rpsHistory[rpsHistory.length - 1].value : 0,
             statusCodes: { ...statusCodes },
             totalRequests,
             activeConnections,
@@ -463,9 +377,6 @@ export function createMonitor(userConfig: StatusMonitorConfig = {}) {
         };
     }
 
-    /**
-     * Get chart data
-     */
     function getChartData(): ChartData {
         return {
             cpu: [...cpuHistory],
@@ -479,9 +390,6 @@ export function createMonitor(userConfig: StatusMonitorConfig = {}) {
         };
     }
 
-    /**
-     * Track a request start
-     */
     function trackRequest(path: string, method: string): void {
         requestCount++;
         totalRequests++;
@@ -505,9 +413,6 @@ export function createMonitor(userConfig: StatusMonitorConfig = {}) {
         }
     }
 
-    /**
-     * Track request completion
-     */
     function trackRequestComplete(
         path: string,
         method: string,
@@ -516,16 +421,13 @@ export function createMonitor(userConfig: StatusMonitorConfig = {}) {
     ): void {
         activeConnections = Math.max(0, activeConnections - 1);
 
-        // Track response time
         totalResponseTime += durationMs;
         responseTimeCount++;
         responseTimeSamples.push(durationMs);
 
-        // Track status code
         const codeStr = statusCode.toString();
         statusCodes[codeStr] = (statusCodes[codeStr] || 0) + 1;
 
-        // Update route stats
         const normalizedPath = config.normalizePath(path);
         const key = `${method}:${normalizedPath}`;
         const stats = routeStats.get(key);
@@ -538,11 +440,9 @@ export function createMonitor(userConfig: StatusMonitorConfig = {}) {
             stats.maxTime = Math.max(stats.maxTime, durationMs);
             stats.lastAccess = Date.now();
 
-            // Track errors
             if (statusCode >= 400) {
                 stats.errors++;
 
-                // Add to recent errors
                 recentErrors.unshift({
                     timestamp: Date.now(),
                     path: normalizedPath,
@@ -551,7 +451,6 @@ export function createMonitor(userConfig: StatusMonitorConfig = {}) {
                     message: `${method} ${normalizedPath} returned ${statusCode}`
                 });
 
-                // Keep only recent errors
                 while (recentErrors.length > config.maxRecentErrors) {
                     recentErrors.pop();
                 }
@@ -559,17 +458,11 @@ export function createMonitor(userConfig: StatusMonitorConfig = {}) {
         }
     }
 
-    /**
-     * Track rate limit
-     */
     function trackRateLimitEvent(blocked: boolean): void {
         rateLimitTotal++;
         if (blocked) rateLimitBlocked++;
     }
 
-    /**
-     * Start metrics collection
-     */
     function start(): void {
         if (!metricsInterval) {
             lastLoopTime = Date.now();
@@ -578,9 +471,6 @@ export function createMonitor(userConfig: StatusMonitorConfig = {}) {
         }
     }
 
-    /**
-     * Stop metrics collection
-     */
     function stop(): void {
         if (metricsInterval) {
             clearInterval(metricsInterval);
@@ -589,29 +479,13 @@ export function createMonitor(userConfig: StatusMonitorConfig = {}) {
         }
     }
 
-    /**
-     * Initialize Socket.io server
-     */
-    function initSocket(server: HttpServer): SocketServer {
-        io = new SocketServer(server, {
-            path: config.socketPath,
-            cors: {
-                origin: '*',
-                methods: ['GET', 'POST']
-            }
-        });
-
-        io.on('connection', (socket) => {
-            console.log('📊 Status monitor client connected');
-            socket.on('disconnect', () => {
-                console.log('📊 Status monitor client disconnected');
-            });
-        });
+    // initSocket is now a no-op for backwards compatibility
+    function initSocket(): null {
+        console.log('📊 Status monitor using polling mode (no WebSocket)');
 
         // Set up IPC message handler for cluster mode
         if (config.clusterMode && clusterAggregator) {
             process.on('message', (message: unknown) => {
-                // Handle worker metrics messages
                 if (
                     message &&
                     typeof message === 'object' &&
@@ -621,17 +495,12 @@ export function createMonitor(userConfig: StatusMonitorConfig = {}) {
                     clusterAggregator.updateWorkerMetrics(message as WorkerMetricsMessage);
                 }
             });
-            console.log('📊 Status monitor WebSocket initialized (cluster mode - aggregating workers)');
-        } else {
-            console.log('📊 Status monitor WebSocket initialized');
+            console.log('📊 Status monitor initialized (cluster mode - aggregating workers)');
         }
 
-        return io;
+        return null;
     }
 
-    /**
-     * Format uptime
-     */
     function formatUptime(seconds: number): string {
         const days = Math.floor(seconds / 86400);
         const hours = Math.floor((seconds % 86400) / 3600);
@@ -647,18 +516,36 @@ export function createMonitor(userConfig: StatusMonitorConfig = {}) {
         return parts.join(' ');
     }
 
+    // For cluster mode aggregation
+    function getAggregatedSnapshot(): Promise<MetricsSnapshot> {
+        return getMetricsSnapshot().then(snapshot => {
+            if (clusterAggregator && clusterAggregator.workerCount > 0) {
+                return clusterAggregator.aggregateMetrics(snapshot);
+            }
+            return snapshot;
+        });
+    }
+
+    function getAggregatedCharts(): ChartData {
+        const charts = getChartData();
+        if (clusterAggregator && clusterAggregator.workerCount > 0) {
+            return clusterAggregator.aggregateCharts(charts);
+        }
+        return charts;
+    }
+
     return {
         config,
         trackRequest,
         trackRequestComplete,
         trackRateLimitEvent,
-        getMetricsSnapshot,
-        getChartData,
+        getMetricsSnapshot: getAggregatedSnapshot,
+        getChartData: getAggregatedCharts,
         start,
         stop,
         initSocket,
         formatUptime,
-        get io() { return io; }
+        get io() { return null; }
     };
 }
 
