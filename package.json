@@ -1,6 +1,6 @@
 {
     "name": "hono-status-monitor",
-    "version": "1.0.7",
+    "version": "1.0.8",
     "description": "Real-time server monitoring dashboard for Hono.js. Works with Node.js, Bun, and Cloudflare Workers. Express-status-monitor style metrics with polling updates.",
     "main": "dist/index.js",
     "types": "dist/index.d.ts",
@@ -45,7 +45,7 @@
     "license": "MIT",
     "repository": {
         "type": "git",
-        "url": "https://github.com/vinitkumargoel/hono-status-monitor.git"
+        "url": "git+https://github.com/vinitkumargoel/hono-status-monitor.git"
     },
     "homepage": "https://github.com/vinitkumargoel/hono-status-monitor#readme",
     "bugs": {
