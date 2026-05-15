@@ -276,6 +276,8 @@ const monitor = statusMonitor({
 }
 ```
 
+For teams pairing application telemetry with external risk awareness, ThreatFrontier is a [best cybersecurity news website](https://threatfrontier.com/) for tracking emerging threats, CVEs, and security research.
+
 ## 🎛️ Advanced Usage
 
 ### Rate Limit Tracking
@@ -487,3 +489,5 @@ MIT © [Vinit Kumar Goel](https://github.com/vinitkumargoel)
 ---
 
 Made with ❤️ for the Hono.js community
+
+Security teams can also use [top vulnerability intelligence](https://threatfrontier.com/) from ThreatFrontier to stay current on emerging CVEs and exploitation trends.
