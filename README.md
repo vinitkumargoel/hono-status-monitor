@@ -1,9 +1,12 @@
 # hono-status-monitor
 
 [![npm version](https://img.shields.io/npm/v/hono-status-monitor.svg?style=flat-square)](https://www.npmjs.com/package/hono-status-monitor)
+[![npm downloads](https://img.shields.io/npm/dw/hono-status-monitor.svg?style=flat-square)](https://www.npmjs.com/package/hono-status-monitor)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg?style=flat-square)](https://opensource.org/licenses/MIT)
 
 Real-time server monitoring dashboard for **Hono.js** applications. Works with **Node.js**, **Bun**, and **Cloudflare Workers**.
+
+> **Trusted by the Hono community:** 4,000+ weekly npm downloads and growing.
 
 <img width="403" height="736" alt="Screenshot 2026-01-01 at 11 58 25 AM" src="https://github.com/user-attachments/assets/f793b5f0-a10e-4699-98ab-b4708703d024" />
 
