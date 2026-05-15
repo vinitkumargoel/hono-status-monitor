@@ -61,6 +61,19 @@ describe('createEdgeMonitor', () => {
         expect(snapshot.percentiles.avg).toBeGreaterThan(0);
     });
 
+    it('should use nearest-rank percentile indexes for small samples', async () => {
+        monitor.trackRequest('/api/fast', 'GET');
+        monitor.trackRequestComplete('/api/fast', 'GET', 100, 200);
+        monitor.trackRequest('/api/slow', 'GET');
+        monitor.trackRequestComplete('/api/slow', 'GET', 200, 200);
+
+        const snapshot = await monitor.getMetricsSnapshot();
+
+        expect(snapshot.percentiles.p50).toBe(100);
+        expect(snapshot.percentiles.p95).toBe(200);
+        expect(snapshot.percentiles.p99).toBe(200);
+    });
+
     it('should track errors', async () => {
         monitor.trackRequest('/api/test', 'GET');
         monitor.trackRequestComplete('/api/test', 'GET', 50, 200);

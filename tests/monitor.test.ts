@@ -40,7 +40,7 @@ describe('createMonitor', () => {
         monitor.trackRequestComplete('/api/test', 'GET', 100, 200);
 
         // Force an update cycle
-        vi.advanceTimersByTime(1000);
+        await vi.advanceTimersByTimeAsync(1000);
 
         const snapshot = await monitor.getMetricsSnapshot();
 
@@ -54,7 +54,7 @@ describe('createMonitor', () => {
         monitor.trackRequest('/api/test', 'GET');
         monitor.trackRequestComplete('/api/test', 'GET', 50, 500);
 
-        vi.advanceTimersByTime(1000);
+        await vi.advanceTimersByTimeAsync(1000);
 
         const snapshot = await monitor.getMetricsSnapshot();
         expect(snapshot.errorRate).toBe(100); // 1 error out of 1 request = 100%
@@ -64,7 +64,7 @@ describe('createMonitor', () => {
         monitor.trackRequest('/api/unknown', 'GET');
         monitor.trackRequestComplete('/api/unknown', 'GET', 20, 404);
 
-        vi.advanceTimersByTime(1000);
+        await vi.advanceTimersByTimeAsync(1000);
 
         const snapshot = await monitor.getMetricsSnapshot();
         expect(snapshot.statusCodes['404']).toBe(1);
@@ -81,12 +81,29 @@ describe('createMonitor', () => {
 
         // Add data for 70 seconds (retention is 60s)
         for (let i = 0; i < 70; i++) {
-            vi.advanceTimersByTime(1000);
+            await vi.advanceTimersByTimeAsync(1000);
         }
 
         const charts = monitor.getChartData();
         // It should have roughly 60 items
         expect(charts.cpu.length).toBeLessThanOrEqual(61);
         expect(charts.cpu.length).toBeGreaterThanOrEqual(59);
+    });
+
+    it('should calculate requests per second using the update interval duration', async () => {
+        monitor.stop();
+        monitor = createMonitor({
+            updateInterval: 2000,
+            retentionSeconds: 60,
+        });
+        monitor.start();
+
+        monitor.trackRequest('/api/test', 'GET');
+        monitor.trackRequestComplete('/api/test', 'GET', 100, 200);
+
+        await vi.advanceTimersByTimeAsync(2000);
+
+        const snapshot = await monitor.getMetricsSnapshot();
+        expect(snapshot.rps).toBe(0.5);
     });
 });

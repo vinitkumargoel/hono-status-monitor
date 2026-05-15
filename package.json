@@ -1,7 +1,7 @@
 {
     "name": "hono-status-monitor",
     "version": "1.0.7",
-    "description": "Real-time server monitoring dashboard for Hono.js. Works with Node.js and Cloudflare Workers. Express-status-monitor style metrics with polling updates.",
+    "description": "Real-time server monitoring dashboard for Hono.js. Works with Node.js, Bun, and Cloudflare Workers. Express-status-monitor style metrics with polling updates.",
     "main": "dist/index.js",
     "types": "dist/index.d.ts",
     "type": "module",
@@ -37,6 +37,7 @@
         "cloudflare",
         "workers",
         "edge",
+        "bun",
         "express-status-monitor"
     ],
     "author": "Vinit Kumar Goel",
@@ -66,6 +67,7 @@
         "vitest": "^4.0.16"
     },
     "engines": {
-        "node": ">=18.0.0"
+        "node": ">=18.0.0",
+        "bun": ">=1.0.0"
     }
 }

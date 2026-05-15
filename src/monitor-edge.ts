@@ -10,11 +10,11 @@ import type {
     StatusCodeCount,
     RouteStats,
     ErrorEntry,
-    PercentileData,
     AlertStatus,
     MetricsSnapshot,
     ChartData
 } from './types.js';
+import { calculatePercentiles, defaultNormalizePath, formatUptime, round } from './metrics-utils.js';
 
 // Default configuration for edge environments
 const DEFAULT_EDGE_CONFIG: Required<StatusMonitorConfig> = {
@@ -37,17 +37,6 @@ const DEFAULT_EDGE_CONFIG: Required<StatusMonitorConfig> = {
     normalizePath: (path: string) => path,
     clusterMode: false // Not supported in edge
 };
-
-/**
- * Default path normalization function
- */
-function defaultNormalizePath(path: string): string {
-    return path
-        .replace(/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/gi, ':uuid')
-        .replace(/[0-9a-f]{24}/gi, ':id')
-        .replace(/\/\d+/g, '/:id')
-        .split('/').slice(0, 4).join('/');
-}
 
 /**
  * Create an edge-compatible status monitor instance
@@ -93,31 +82,6 @@ export function createEdgeMonitor(userConfig: StatusMonitorConfig = {}) {
     const startTime = Date.now();
 
     /**
-     * Calculate percentiles from samples
-     */
-    function calculatePercentiles(): PercentileData {
-        if (responseTimeSamples.length === 0) {
-            return { p50: 0, p95: 0, p99: 0, avg: 0 };
-        }
-
-        const sorted = [...responseTimeSamples].sort((a, b) => a - b);
-        const len = sorted.length;
-
-        const p50Index = Math.floor(len * 0.5);
-        const p95Index = Math.floor(len * 0.95);
-        const p99Index = Math.floor(len * 0.99);
-
-        const avg = sorted.reduce((a, b) => a + b, 0) / len;
-
-        return {
-            p50: Math.round(sorted[p50Index] * 100) / 100,
-            p95: Math.round(sorted[p95Index] * 100) / 100,
-            p99: Math.round(sorted[Math.min(p99Index, len - 1)] * 100) / 100,
-            avg: Math.round(avg * 100) / 100
-        };
-    }
-
-    /**
      * Get top routes by request count
      */
     function getTopRoutes(): RouteStats[] {
@@ -152,7 +116,7 @@ export function createEdgeMonitor(userConfig: StatusMonitorConfig = {}) {
     function getErrorRate(): number {
         const totalErrors = Array.from(routeStats.values()).reduce((sum, r) => sum + r.errors, 0);
         if (totalRequests === 0) return 0;
-        return Math.round((totalErrors / totalRequests) * 10000) / 100;
+        return round((totalErrors / totalRequests) * 100);
     }
 
     /**
@@ -196,14 +160,14 @@ export function createEdgeMonitor(userConfig: StatusMonitorConfig = {}) {
         // Only update history at configured intervals
         if (elapsed >= config.updateInterval) {
             const intervalSeconds = elapsed / 1000;
-            const currentRps = Math.round((requestCount - lastRequestCount) / intervalSeconds);
+            const currentRps = round((requestCount - lastRequestCount) / intervalSeconds);
             lastRequestCount = requestCount;
             lastUpdateTime = now;
 
             addToHistory(rpsHistory, currentRps);
 
             const avgResponseTime = responseTimeCount > 0
-                ? Math.round((totalResponseTime / responseTimeCount) * 100) / 100
+                ? round(totalResponseTime / responseTimeCount)
                 : 0;
             addToHistory(responseTimeHistory, avgResponseTime);
             addToHistory(errorRateHistory, getErrorRate());
@@ -346,7 +310,7 @@ export function createEdgeMonitor(userConfig: StatusMonitorConfig = {}) {
             pid: 0,
             cpuCount: 0,
             // Analytics - available
-            percentiles: calculatePercentiles(),
+            percentiles: calculatePercentiles(responseTimeSamples),
             topRoutes: getTopRoutes(),
             slowestRoutes: getSlowestRoutes(),
             errorRoutes: getErrorRoutes(),
@@ -386,24 +350,6 @@ export function createEdgeMonitor(userConfig: StatusMonitorConfig = {}) {
             eventLoopLag: [], // Not available
             errorRate: [...errorRateHistory]
         };
-    }
-
-    /**
-     * Format uptime
-     */
-    function formatUptime(seconds: number): string {
-        const days = Math.floor(seconds / 86400);
-        const hours = Math.floor((seconds % 86400) / 3600);
-        const minutes = Math.floor((seconds % 3600) / 60);
-        const secs = Math.floor(seconds % 60);
-
-        const parts: string[] = [];
-        if (days > 0) parts.push(`${days}d`);
-        if (hours > 0) parts.push(`${hours}h`);
-        if (minutes > 0) parts.push(`${minutes}m`);
-        parts.push(`${secs}s`);
-
-        return parts.join(' ');
     }
 
     // No-op functions for compatibility

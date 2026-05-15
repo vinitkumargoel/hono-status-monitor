@@ -10,7 +10,6 @@ import type {
     StatusCodeCount,
     RouteStats,
     ErrorEntry,
-    PercentileData,
     AlertStatus,
     DatabaseStats,
     MetricsSnapshot,
@@ -23,6 +22,8 @@ import {
     createClusterAggregator,
     type ClusterAggregator
 } from './cluster.js';
+import { calculatePercentiles, defaultNormalizePath, formatUptime, round } from './metrics-utils.js';
+import { detectPlatform } from './platform.js';
 
 // Default configuration
 const DEFAULT_CONFIG: Required<StatusMonitorConfig> = {
@@ -45,17 +46,6 @@ const DEFAULT_CONFIG: Required<StatusMonitorConfig> = {
     normalizePath: (path: string) => path,
     clusterMode: undefined as unknown as boolean // Will be auto-detected
 };
-
-/**
- * Default path normalization function
- */
-function defaultNormalizePath(path: string): string {
-    return path
-        .replace(/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/gi, ':uuid')
-        .replace(/[0-9a-f]{24}/gi, ':id')
-        .replace(/\/\d+/g, '/:id')
-        .split('/').slice(0, 4).join('/');
-}
 
 /**
  * Create a status monitor instance
@@ -86,6 +76,7 @@ export function createMonitor(userConfig: StatusMonitorConfig = {}) {
     // Request tracking
     let requestCount = 0;
     let lastRequestCount = 0;
+    let lastRpsUpdateTime = Date.now();
     let totalResponseTime = 0;
     let responseTimeCount = 0;
     let statusCodes: StatusCodeCount = {};
@@ -119,8 +110,50 @@ export function createMonitor(userConfig: StatusMonitorConfig = {}) {
     // Metrics collection interval
     let metricsInterval: ReturnType<typeof setInterval> | null = null;
 
+    function getCpuInfo(): os.CpuInfo[] {
+        try {
+            return os.cpus();
+        } catch {
+            return [];
+        }
+    }
+
+    function getSystemUptime(): number {
+        try {
+            return Math.round(os.uptime());
+        } catch {
+            return Math.round(process.uptime());
+        }
+    }
+
+    function getPlatformLabel(): string {
+        try {
+            return `${os.type()} ${os.release()}`;
+        } catch {
+            return process.platform;
+        }
+    }
+
+    function getHostname(): string {
+        try {
+            return os.hostname();
+        } catch {
+            return 'unknown';
+        }
+    }
+
+    function getRuntimeVersion(): string {
+        const bunVersion = (process.versions as NodeJS.ProcessVersions & { bun?: string }).bun;
+        if (detectPlatform() === 'bun' && bunVersion) {
+            return `Bun ${bunVersion}`;
+        }
+
+        return process.version;
+    }
+
     function calculateCpuUsage(): number {
-        const cpus = os.cpus();
+        const cpus = getCpuInfo();
+        if (cpus.length === 0) return 0;
 
         if (!lastCpuInfo) {
             lastCpuInfo = cpus;
@@ -133,6 +166,7 @@ export function createMonitor(userConfig: StatusMonitorConfig = {}) {
         for (let i = 0; i < cpus.length; i++) {
             const cpu = cpus[i];
             const lastCpu = lastCpuInfo[i];
+            if (!lastCpu) continue;
 
             const idle = cpu.times.idle - lastCpu.times.idle;
             const total =
@@ -149,26 +183,26 @@ export function createMonitor(userConfig: StatusMonitorConfig = {}) {
         lastCpuInfo = cpus;
 
         if (totalTick === 0) return 0;
-        return Math.round(((totalTick - totalIdle) / totalTick) * 1000) / 10;
+        return round(((totalTick - totalIdle) / totalTick) * 100, 1);
     }
 
     function getMemoryMB(): number {
         const totalMem = os.totalmem();
         const freeMem = os.freemem();
         const usedMem = totalMem - freeMem;
-        return Math.round((usedMem / (1024 * 1024)) * 10) / 10;
+        return round(usedMem / (1024 * 1024), 1);
     }
 
     function getMemoryPercent(): number {
         const totalMem = os.totalmem();
         const freeMem = os.freemem();
         const usedMem = totalMem - freeMem;
-        return Math.round((usedMem / totalMem) * 1000) / 10;
+        return round((usedMem / totalMem) * 100, 1);
     }
 
     function getHeapUsage(): { used: number; total: number } {
         const mem = process.memoryUsage();
-        const used = Math.round((mem.heapUsed / (1024 * 1024)) * 10) / 10;
+        const used = round(mem.heapUsed / (1024 * 1024), 1);
 
         if (lastHeapUsed > 0) {
             heapGrowthRate = used - lastHeapUsed;
@@ -177,13 +211,17 @@ export function createMonitor(userConfig: StatusMonitorConfig = {}) {
 
         return {
             used,
-            total: Math.round((mem.heapTotal / (1024 * 1024)) * 10) / 10
+            total: round(mem.heapTotal / (1024 * 1024), 1)
         };
     }
 
     function getLoadAverage(): number {
-        const loadAvg = os.loadavg();
-        return Math.round(loadAvg[0] * 100) / 100;
+        try {
+            const loadAvg = os.loadavg();
+            return round(loadAvg[0]);
+        } catch {
+            return 0;
+        }
     }
 
     function measureEventLoopLag(): number {
@@ -193,29 +231,7 @@ export function createMonitor(userConfig: StatusMonitorConfig = {}) {
         lastLoopTime = now;
 
         const lag = Math.max(0, actualInterval - expectedInterval);
-        return Math.round(lag * 10) / 10;
-    }
-
-    function calculatePercentiles(): PercentileData {
-        if (responseTimeSamples.length === 0) {
-            return { p50: 0, p95: 0, p99: 0, avg: 0 };
-        }
-
-        const sorted = [...responseTimeSamples].sort((a, b) => a - b);
-        const len = sorted.length;
-
-        const p50Index = Math.floor(len * 0.5);
-        const p95Index = Math.floor(len * 0.95);
-        const p99Index = Math.floor(len * 0.99);
-
-        const avg = sorted.reduce((a, b) => a + b, 0) / len;
-
-        return {
-            p50: Math.round(sorted[p50Index] * 100) / 100,
-            p95: Math.round(sorted[p95Index] * 100) / 100,
-            p99: Math.round(sorted[Math.min(p99Index, len - 1)] * 100) / 100,
-            avg: Math.round(avg * 100) / 100
-        };
+        return round(lag, 1);
     }
 
     function getTopRoutes(): RouteStats[] {
@@ -241,7 +257,7 @@ export function createMonitor(userConfig: StatusMonitorConfig = {}) {
     function getErrorRate(): number {
         const totalErrors = Array.from(routeStats.values()).reduce((sum, r) => sum + r.errors, 0);
         if (totalRequests === 0) return 0;
-        return Math.round((totalErrors / totalRequests) * 10000) / 100;
+        return round((totalErrors / totalRequests) * 100);
     }
 
     function checkAlerts(): AlertStatus {
@@ -264,7 +280,7 @@ export function createMonitor(userConfig: StatusMonitorConfig = {}) {
         try {
             const start = performance.now();
             const result = await config.healthCheck();
-            dbLatency = Math.round((performance.now() - start) * 100) / 100;
+            dbLatency = round(performance.now() - start);
 
             return {
                 connected: result.connected,
@@ -307,12 +323,15 @@ export function createMonitor(userConfig: StatusMonitorConfig = {}) {
         addToHistory(eventLoopLagHistory, eventLoopLag);
         addToHistory(errorRateHistory, errorRate);
 
-        const currentRps = requestCount - lastRequestCount;
+        const now = Date.now();
+        const elapsedSeconds = Math.max((now - lastRpsUpdateTime) / 1000, config.updateInterval / 1000);
+        const currentRps = round((requestCount - lastRequestCount) / elapsedSeconds);
         lastRequestCount = requestCount;
+        lastRpsUpdateTime = now;
         addToHistory(rpsHistory, currentRps);
 
         const avgResponseTime = responseTimeCount > 0
-            ? Math.round((totalResponseTime / responseTimeCount) * 100) / 100
+            ? round(totalResponseTime / responseTimeCount)
             : 0;
         addToHistory(responseTimeHistory, avgResponseTime);
 
@@ -344,7 +363,7 @@ export function createMonitor(userConfig: StatusMonitorConfig = {}) {
             heapUsedMB: heap.used,
             heapTotalMB: heap.total,
             loadAvg: getLoadAverage(),
-            uptime: Math.round(os.uptime()),
+            uptime: getSystemUptime(),
             processUptime: Math.round(process.uptime()),
             responseTime: responseTimeHistory.length > 0
                 ? responseTimeHistory[responseTimeHistory.length - 1].value
@@ -356,12 +375,12 @@ export function createMonitor(userConfig: StatusMonitorConfig = {}) {
             eventLoopLag: eventLoopLagHistory.length > 0
                 ? eventLoopLagHistory[eventLoopLagHistory.length - 1].value
                 : 0,
-            hostname: os.hostname(),
-            platform: `${os.type()} ${os.release()}`,
-            nodeVersion: process.version,
+            hostname: getHostname(),
+            platform: getPlatformLabel(),
+            nodeVersion: getRuntimeVersion(),
             pid: process.pid,
-            cpuCount: os.cpus().length,
-            percentiles: calculatePercentiles(),
+            cpuCount: getCpuInfo().length,
+            percentiles: calculatePercentiles(responseTimeSamples),
             topRoutes: getTopRoutes(),
             slowestRoutes: getSlowestRoutes(),
             errorRoutes: getErrorRoutes(),
@@ -370,7 +389,7 @@ export function createMonitor(userConfig: StatusMonitorConfig = {}) {
             gc: {
                 collections: 0,
                 pauseTimeMs: 0,
-                heapGrowthRate: Math.round(heapGrowthRate * 100) / 100
+                heapGrowthRate: round(heapGrowthRate)
             },
             database: db,
             rateLimitStats: { blocked: rateLimitBlocked, total: rateLimitTotal },
@@ -500,21 +519,6 @@ export function createMonitor(userConfig: StatusMonitorConfig = {}) {
         }
 
         return null;
-    }
-
-    function formatUptime(seconds: number): string {
-        const days = Math.floor(seconds / 86400);
-        const hours = Math.floor((seconds % 86400) / 3600);
-        const minutes = Math.floor((seconds % 3600) / 60);
-        const secs = Math.floor(seconds % 60);
-
-        const parts: string[] = [];
-        if (days > 0) parts.push(`${days}d`);
-        if (hours > 0) parts.push(`${hours}h`);
-        if (minutes > 0) parts.push(`${minutes}m`);
-        parts.push(`${secs}s`);
-
-        return parts.join(' ');
     }
 
     // For cluster mode aggregation

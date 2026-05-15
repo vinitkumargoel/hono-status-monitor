@@ -3,7 +3,7 @@
 [![npm version](https://img.shields.io/npm/v/hono-status-monitor.svg?style=flat-square)](https://www.npmjs.com/package/hono-status-monitor)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg?style=flat-square)](https://opensource.org/licenses/MIT)
 
-Real-time server monitoring dashboard for **Hono.js** applications. Works with **Node.js** and **Cloudflare Workers**.
+Real-time server monitoring dashboard for **Hono.js** applications. Works with **Node.js**, **Bun**, and **Cloudflare Workers**.
 
 <img width="403" height="736" alt="Screenshot 2026-01-01 at 11 58 25 AM" src="https://github.com/user-attachments/assets/f793b5f0-a10e-4699-98ab-b4708703d024" />
 
@@ -18,9 +18,18 @@ Real-time server monitoring dashboard for **Hono.js** applications. Works with *
 | **Error Tracking** | Recent errors with timestamps, paths, and status codes |
 | **Visual Alerts** | Automatic warnings when CPU >80%, Memory >90%, Response >500ms |
 | **Dark Mode** | Toggle with localStorage persistence |
-| **Polling Updates** | Configurable polling interval (1s default for Node.js, 5s for edge) |
+| **Polling Updates** | Configurable polling interval (1s default for Node.js/Bun, 5s for edge) |
+| **Bun Support** | Works with Bun.serve and full server-side metrics |
 | **Edge Support** | Works in Cloudflare Workers and edge runtimes |
 | **Configurable** | Custom thresholds, paths, titles, polling intervals, and more |
+
+## Runtime Support
+
+| Runtime | Import | Server | Metrics |
+|---------|--------|--------|---------|
+| Node.js | `hono-status-monitor` | `@hono/node-server` | Full system and request metrics |
+| Bun | `hono-status-monitor` | `Bun.serve` | Full system and request metrics |
+| Cloudflare Workers / Edge | `hono-status-monitor/edge` | Runtime default export | Request metrics only |
 
 
 ## 📦 Installation
@@ -31,9 +40,17 @@ npm install hono-status-monitor
 yarn add hono-status-monitor
 # or
 pnpm add hono-status-monitor
+# or
+bun add hono-status-monitor
 ```
 
-## 🚀 Quick Start
+## 🚀 Node.js Quick Start
+
+Install the Node server adapter if your app does not already have it:
+
+```bash
+npm install @hono/node-server
+```
 
 ```typescript
 import { Hono } from 'hono';
@@ -63,6 +80,30 @@ const server = serve({ fetch: app.fetch, port: 3000 });
 console.log('📊 Status monitor: http://localhost:3000/status');
 ```
 
+## Bun Quick Start
+
+Use the default import with Bun. You do not need `@hono/node-server`; Hono runs directly through `Bun.serve`.
+
+```typescript
+import { Hono } from 'hono';
+import { statusMonitor } from 'hono-status-monitor';
+
+const app = new Hono();
+const monitor = statusMonitor();
+
+app.use('*', monitor.middleware);
+app.route('/status', monitor.routes);
+
+app.get('/', (c) => c.text('Hello Bun!'));
+
+Bun.serve({
+    fetch: app.fetch,
+    port: 3000
+});
+
+console.log('Status monitor: http://localhost:3000/status');
+```
+
 ## ⚙️ Configuration
 
 ```typescript
@@ -73,7 +114,7 @@ const monitor = statusMonitor({
     // Dashboard title (default: 'Server Status')
     title: 'My App Status',
     
-    // Dashboard polling interval in ms (default: 1000 for Node.js, 5000 for edge)
+    // Dashboard polling interval in ms (default: 1000 for Node.js/Bun, 5000 for edge)
     pollingInterval: 1000,
     
     // Metrics collection interval in ms (default: 1000)
@@ -167,7 +208,7 @@ const monitor = statusMonitor({
 - Heap total and growth rate
 
 ### Process Info
-- Node.js version
+- Runtime version
 - Platform
 - PID
 - CPU count
@@ -369,7 +410,7 @@ app.route('/status', monitor.routes);
 
 ## ☁️ Cloudflare Workers / Edge Support
 
-This package provides a separate edge entry point that has **zero Node.js dependencies**.
+This package provides a separate edge entry point that has **zero Node.js/Bun dependencies**. Use it for Cloudflare Workers and other runtimes where Node-compatible system APIs are not available.
 
 ### Available Metrics in Edge Environments
 
@@ -413,11 +454,11 @@ app.get('/', (c) => c.text('Hello from Cloudflare Workers!'));
 export default app;
 ```
 
-> **Note:** In edge environments, the dashboard uses HTTP polling instead of WebSocket for updates. The polling interval is configurable via `pollingInterval` (defaults to 5 seconds for edge, 1 second for Node.js).
+> **Note:** In edge environments, the dashboard uses HTTP polling instead of WebSocket for updates. The polling interval is configurable via `pollingInterval` (defaults to 5 seconds for edge, 1 second for Node.js/Bun).
 
-### Force Edge Mode in Node.js
+### Force Edge Mode in Node.js or Bun
 
-You can also use the edge-compatible monitor in Node.js if you don't need system metrics:
+You can also use the edge-compatible monitor in Node.js or Bun if you don't need system metrics:
 
 ```typescript
 import { statusMonitor } from 'hono-status-monitor/edge';
@@ -428,6 +469,7 @@ const monitor = statusMonitor();
 ## 📋 Requirements
 
 - Node.js >= 18.0.0 (for Node.js mode)
+- Bun >= 1.0.0 (for Bun mode)
 - Hono.js >= 4.0.0
 - @hono/node-server >= 1.0.0 (for Node.js mode only)
 
@@ -442,4 +484,3 @@ MIT © [Vinit Kumar Goel](https://github.com/vinitkumargoel)
 ---
 
 Made with ❤️ for the Hono.js community
-

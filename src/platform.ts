@@ -1,12 +1,12 @@
 // =============================================================================
 // HONO STATUS MONITOR - PLATFORM DETECTION
-// Detect runtime environment (Node.js, Cloudflare Workers, Edge, etc.)
+// Detect runtime environment (Node.js, Bun, Cloudflare Workers, Edge, etc.)
 // =============================================================================
 
 /**
  * Supported platform types
  */
-export type Platform = 'node' | 'cloudflare' | 'edge' | 'unknown';
+export type Platform = 'node' | 'bun' | 'cloudflare' | 'edge' | 'unknown';
 
 /**
  * Detect the current runtime platform
@@ -14,6 +14,11 @@ export type Platform = 'node' | 'cloudflare' | 'edge' | 'unknown';
  * @returns The detected platform type
  */
 export function detectPlatform(): Platform {
+    // Check for Bun before Node.js because Bun exposes process.versions.node.
+    if (typeof process !== 'undefined' && 'bun' in process.versions) {
+        return 'bun';
+    }
+
     // Check for Node.js
     if (typeof process !== 'undefined' && process.versions?.node) {
         return 'node';
@@ -42,12 +47,6 @@ export function detectPlatform(): Platform {
         return 'edge';
     }
 
-    // Check for Bun
-    // @ts-ignore - Bun global
-    if (typeof Bun !== 'undefined') {
-        return 'node'; // Bun is Node.js compatible
-    }
-
     // Generic edge runtime (Vercel Edge, etc.)
     // @ts-ignore - EdgeRuntime global may not exist in all environments
     if (typeof EdgeRuntime !== 'undefined') {
@@ -62,6 +61,13 @@ export function detectPlatform(): Platform {
  */
 export function isNodeEnvironment(): boolean {
     return detectPlatform() === 'node';
+}
+
+/**
+ * Check if running in a Bun environment
+ */
+export function isBunEnvironment(): boolean {
+    return detectPlatform() === 'bun';
 }
 
 /**
@@ -90,13 +96,13 @@ export function getPlatformInfo(): {
     hasClusterSupport: boolean;
 } {
     const platform = detectPlatform();
-    const isNode = platform === 'node';
+    const isNodeCompatible = platform === 'node' || platform === 'bun';
 
     return {
         platform,
-        hasOsModule: isNode,
-        hasProcessModule: isNode,
-        hasWebSocketSupport: isNode, // Full socket.io support
-        hasClusterSupport: isNode
+        hasOsModule: isNodeCompatible,
+        hasProcessModule: isNodeCompatible,
+        hasWebSocketSupport: isNodeCompatible,
+        hasClusterSupport: platform === 'node'
     };
 }

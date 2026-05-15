@@ -305,7 +305,7 @@ export function generateDashboard({ hostname, uptime, socketPath, title }: Dashb
 
         <div class="section-title">Process Info</div>
         <div class="process-grid">
-            <div class="process-item"><div class="label">Node</div><div class="value" id="nodeVer">-</div></div>
+            <div class="process-item"><div class="label">Runtime</div><div class="value" id="nodeVer">-</div></div>
             <div class="process-item"><div class="label">Platform</div><div class="value" id="platform">-</div></div>
             <div class="process-item"><div class="label">PID</div><div class="value" id="pid">-</div></div>
             <div class="process-item"><div class="label">CPUs</div><div class="value" id="cpuCount">-</div></div>
@@ -865,4 +865,3 @@ export function generateEdgeDashboard({ hostname, uptime, title, pollingInterval
 </body>
 </html>`;
 }
-

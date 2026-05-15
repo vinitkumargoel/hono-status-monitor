@@ -13,6 +13,7 @@ import type {
     RouteStats,
     StatusCodeCount
 } from './types.js';
+import { round } from './metrics-utils.js';
 
 /**
  * Check if running in cluster mode (PM2 or native Node.js cluster)
@@ -222,12 +223,12 @@ export function createClusterAggregator() {
 
         return {
             ...baseSnapshot,
-            cpu: Math.round(avgCpu * 10) / 10,
-            responseTime: Math.round(avgResponseTime * 100) / 100,
+            cpu: round(avgCpu, 1),
+            responseTime: round(avgResponseTime),
             rps: totalRps,
             totalRequests,
             activeConnections: totalActiveConnections,
-            errorRate: Math.round(avgErrorRate * 100) / 100,
+            errorRate: round(avgErrorRate),
             statusCodes: Object.keys(aggregatedStatusCodes).length > 0
                 ? aggregatedStatusCodes
                 : baseSnapshot.statusCodes,
@@ -286,7 +287,7 @@ export function createClusterAggregator() {
             const result: MetricDataPoint[] = [];
             for (const [timestamp, { sum, count }] of timeMap.entries()) {
                 const value = aggregationType === 'sum' ? sum : sum / count;
-                result.push({ timestamp, value: Math.round(value * 100) / 100 });
+                result.push({ timestamp, value: round(value) });
             }
 
             return result.sort((a, b) => a.timestamp - b.timestamp);
