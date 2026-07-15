@@ -13,7 +13,9 @@ export function defaultNormalizePath(path: string): string {
     return path
         .replace(/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/gi, ':uuid')
         .replace(/[0-9a-f]{24}/gi, ':id')
-        .replace(/\/\d+/g, '/:id')
+        // Only collapse whole numeric segments (e.g. /users/42), not segments that
+        // merely start with a digit (e.g. /2fa/verify).
+        .replace(/\/\d+(?=\/|$)/g, '/:id')
         .split('/')
         .slice(0, 4)
         .join('/');

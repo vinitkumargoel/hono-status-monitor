@@ -15,11 +15,17 @@ export type {
     RouteStats,
     ErrorEntry,
     PercentileData,
-    AlertStatus
+    AlertStatus,
+    AlertEvent,
+    HealthReport,
+    NamedHealthResult,
+    StatusStore
 } from './types.js';
 
 export { createEdgeMonitor, type EdgeMonitor } from './monitor-edge.js';
 export { generateEdgeDashboard } from './dashboard.js';
+export { toPrometheus } from './format.js';
+export { mergeSnapshots, generateInstanceId } from './edge-store.js';
 
 /**
  * Create a status monitor for Edge/Cloudflare Workers environments

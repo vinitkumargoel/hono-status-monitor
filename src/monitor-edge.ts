@@ -11,10 +11,16 @@ import type {
     RouteStats,
     ErrorEntry,
     AlertStatus,
+    AlertEvent,
+    HealthCheckResult,
     MetricsSnapshot,
-    ChartData
+    ChartData,
+    NamedHealthResult,
+    HealthReport,
+    StatusStore
 } from './types.js';
 import { calculatePercentiles, defaultNormalizePath, formatUptime, round } from './metrics-utils.js';
+import { persistSnapshot, loadPeerSnapshots, mergeSnapshots, generateInstanceId } from './edge-store.js';
 
 // Default configuration for edge environments
 const DEFAULT_EDGE_CONFIG: Required<StatusMonitorConfig> = {
@@ -26,6 +32,7 @@ const DEFAULT_EDGE_CONFIG: Required<StatusMonitorConfig> = {
     retentionSeconds: 60,
     maxRecentErrors: 10,
     maxRoutes: 10,
+    maxTrackedRoutes: 1000,
     alerts: {
         cpu: 80, // Not available in edge
         memory: 90, // Not available in edge
@@ -34,8 +41,19 @@ const DEFAULT_EDGE_CONFIG: Required<StatusMonitorConfig> = {
         eventLoopLag: 100 // Not available in edge
     },
     healthCheck: async () => ({ connected: true, latencyMs: 0 }),
+    healthChecks: undefined as unknown as Record<string, () => Promise<HealthCheckResult>>,
     normalizePath: (path: string) => path,
-    clusterMode: false // Not supported in edge
+    clusterMode: false, // Not supported in edge
+    authorize: undefined as unknown as (c: any) => boolean | Promise<boolean>,
+    onAlert: undefined as unknown as (event: AlertEvent) => void,
+    prometheus: true,
+    prometheusPrefix: 'hono',
+    chartjsUrl: undefined as unknown as string,
+    chartAdapterUrl: undefined as unknown as string,
+    inlineCharts: false,
+    store: undefined as unknown as StatusStore,
+    instanceId: undefined as unknown as string,
+    storeWriteInterval: 60000
 };
 
 /**
@@ -77,6 +95,15 @@ export function createEdgeMonitor(userConfig: StatusMonitorConfig = {}) {
     // Rate limit tracking
     let rateLimitBlocked = 0;
     let rateLimitTotal = 0;
+
+    // Alert transition state (for onAlert callbacks)
+    let lastAlertState: AlertStatus = {
+        cpu: false, memory: false, responseTime: false, errorRate: false, eventLoopLag: false
+    };
+
+    // Cross-isolate store state (opt-in via config.store)
+    const instanceId = config.instanceId || generateInstanceId();
+    let lastPersistTime = 0;
 
     // Start time for uptime calculation
     const startTime = Date.now();
@@ -137,6 +164,94 @@ export function createEdgeMonitor(userConfig: StatusMonitorConfig = {}) {
         };
     }
 
+    // Fire onAlert only on OK<->breached transitions.
+    function fireAlertTransitions(): void {
+        if (!config.onAlert) return;
+        const current = checkAlerts();
+        const respTime = responseTimeHistory.length > 0 ? responseTimeHistory[responseTimeHistory.length - 1].value : 0;
+        const values: Record<keyof AlertStatus, number> = {
+            cpu: 0, memory: 0, eventLoopLag: 0,
+            responseTime: respTime,
+            errorRate: getErrorRate()
+        };
+        const thresholds: Record<keyof AlertStatus, number> = {
+            cpu: config.alerts.cpu ?? 80,
+            memory: config.alerts.memory ?? 90,
+            responseTime: config.alerts.responseTime ?? 500,
+            errorRate: config.alerts.errorRate ?? 5,
+            eventLoopLag: config.alerts.eventLoopLag ?? 100
+        };
+        (Object.keys(current) as (keyof AlertStatus)[]).forEach((metric) => {
+            if (current[metric] !== lastAlertState[metric]) {
+                try {
+                    config.onAlert!({
+                        metric, active: current[metric],
+                        value: values[metric], threshold: thresholds[metric],
+                        timestamp: Date.now()
+                    });
+                } catch { /* ignore user callback errors */ }
+            }
+        });
+        lastAlertState = current;
+    }
+
+    // Cap distinct tracked routes; evict least-recently-accessed.
+    function evictRoutesIfNeeded(): void {
+        if (routeStats.size < config.maxTrackedRoutes) return;
+        let oldestKey: string | null = null;
+        let oldestAccess = Infinity;
+        for (const [k, v] of routeStats) {
+            if (v.lastAccess < oldestAccess) {
+                oldestAccess = v.lastAccess;
+                oldestKey = k;
+            }
+        }
+        if (oldestKey) routeStats.delete(oldestKey);
+    }
+
+    // Run configured named health checks (falls back to the single healthCheck).
+    async function getHealthReport(): Promise<HealthReport> {
+        const checks = config.healthChecks
+            ? Object.entries(config.healthChecks)
+            : ([['database', config.healthCheck]] as [string, () => Promise<HealthCheckResult>][]);
+        const results: NamedHealthResult[] = await Promise.all(
+            checks.map(async ([name, fn]) => {
+                try {
+                    const start = Date.now();
+                    const r = await fn();
+                    return { name: r.name || name, connected: r.connected, latencyMs: r.latencyMs || (Date.now() - start), details: r.details };
+                } catch (err) {
+                    return { name, connected: false, latencyMs: 0, details: { error: err instanceof Error ? err.message : String(err) } };
+                }
+            })
+        );
+        return {
+            status: results.every(r => r.connected) ? 'ok' : 'degraded',
+            uptime: Math.round((Date.now() - startTime) / 1000),
+            timestamp: Date.now(),
+            checks: results
+        };
+    }
+
+    // Clear accumulated request/route/error counters.
+    function resetStats(): void {
+        responseTimeHistory = [];
+        rpsHistory = [];
+        errorRateHistory = [];
+        requestCount = 0;
+        lastRequestCount = 0;
+        totalResponseTime = 0;
+        responseTimeCount = 0;
+        statusCodes = {};
+        totalRequests = 0;
+        activeConnections = 0;
+        routeStats.clear();
+        recentErrors.length = 0;
+        responseTimeSamples = [];
+        rateLimitBlocked = 0;
+        rateLimitTotal = 0;
+    }
+
     /**
      * Add a data point to history
      */
@@ -172,6 +287,8 @@ export function createEdgeMonitor(userConfig: StatusMonitorConfig = {}) {
             addToHistory(responseTimeHistory, avgResponseTime);
             addToHistory(errorRateHistory, getErrorRate());
 
+            fireAlertTransitions();
+
             // Reset counters
             totalResponseTime = 0;
             responseTimeCount = 0;
@@ -195,6 +312,7 @@ export function createEdgeMonitor(userConfig: StatusMonitorConfig = {}) {
         const key = `${method}:${normalizedPath}`;
 
         if (!routeStats.has(key)) {
+            evictRoutesIfNeeded();
             routeStats.set(key, {
                 path: normalizedPath,
                 method,
@@ -273,9 +391,9 @@ export function createEdgeMonitor(userConfig: StatusMonitorConfig = {}) {
     }
 
     /**
-     * Get current metrics snapshot
+     * Build this isolate's own metrics snapshot (no cross-isolate aggregation).
      */
-    async function getMetricsSnapshot(): Promise<MetricsSnapshot> {
+    async function getLocalSnapshot(): Promise<MetricsSnapshot> {
         // Trigger update check
         updateMetricsIfNeeded();
 
@@ -337,7 +455,46 @@ export function createEdgeMonitor(userConfig: StatusMonitorConfig = {}) {
     }
 
     /**
-     * Get chart data
+     * Persist this isolate's snapshot to the store (rate-limited, best-effort).
+     */
+    async function maybePersist(snapshot: MetricsSnapshot): Promise<void> {
+        if (!config.store) return;
+        const now = Date.now();
+        if (now - lastPersistTime < config.storeWriteInterval) return;
+        lastPersistTime = now;
+        const ttlSeconds = Math.max(config.retentionSeconds, (config.storeWriteInterval / 1000) * 3);
+        await persistSnapshot(config.store, instanceId, snapshot, ttlSeconds);
+    }
+
+    /**
+     * Get current metrics snapshot. When a `store` is configured, this returns an
+     * approximate fleet-wide aggregate across isolates; otherwise it is local.
+     */
+    async function getMetricsSnapshot(): Promise<MetricsSnapshot> {
+        const local = await getLocalSnapshot();
+        if (!config.store) return local;
+
+        // Best-effort persist + peer merge; never let store failures break the read.
+        try {
+            await maybePersist(local);
+            const peers = await loadPeerSnapshots(config.store, instanceId);
+            return mergeSnapshots(local, peers, {
+                maxRoutes: config.maxRoutes,
+                maxRecentErrors: config.maxRecentErrors
+            });
+        } catch {
+            return local;
+        }
+    }
+
+    /**
+     * Get chart data.
+     *
+     * NOTE: chart histories are always LOCAL to this isolate, even when a `store`
+     * is configured and `getMetricsSnapshot()` returns fleet-aggregated numbers.
+     * Per-isolate time-series can't be summed across isolates without shared
+     * timestamp buckets, so the dashboard's numeric cards show the fleet total
+     * while the sparklines show this isolate's own trend.
      */
     function getChartData(): ChartData {
         return {
@@ -376,6 +533,8 @@ export function createEdgeMonitor(userConfig: StatusMonitorConfig = {}) {
         trackRateLimitEvent,
         getMetricsSnapshot,
         getChartData,
+        getHealthReport,
+        resetStats,
         start,
         stop,
         initSocket,

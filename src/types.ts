@@ -22,14 +22,101 @@ export interface StatusMonitorConfig {
     maxRecentErrors?: number;
     /** Maximum routes to show in analytics (default: 10) */
     maxRoutes?: number;
+    /**
+     * Hard cap on distinct routes tracked in memory. Prevents unbounded growth
+     * from scanners/unique-path attacks. Least-recently-used routes are evicted
+     * once the cap is reached (default: 1000).
+     */
+    maxTrackedRoutes?: number;
     /** Alert thresholds */
     alerts?: AlertThresholds;
-    /** Optional async function to check database health */
+    /** Optional async function to check database health (single-check shorthand) */
     healthCheck?: () => Promise<HealthCheckResult>;
+    /**
+     * Named health checks surfaced on the dashboard and `/health` endpoint.
+     * Each is run in parallel; the endpoint returns 503 if any required check fails.
+     */
+    healthChecks?: Record<string, () => Promise<HealthCheckResult>>;
     /** Custom path normalization function */
     normalizePath?: (path: string) => string;
     /** Enable cluster mode for PM2/multi-process aggregation (auto-detected if not set) */
     clusterMode?: boolean;
+    /**
+     * Guard the dashboard, API and stream endpoints. Return `true`/`false`
+     * (or a Promise of it) from the Hono context. Falsy responses get a 401.
+     */
+    authorize?: (c: any) => boolean | Promise<boolean>;
+    /** Called whenever an alert transitions between OK and breached. */
+    onAlert?: (event: AlertEvent) => void;
+    /** Expose a Prometheus/OpenMetrics scrape endpoint at `<path>/prometheus` (default: true) */
+    prometheus?: boolean;
+    /** Metric name prefix used in Prometheus output (default: 'hono') */
+    prometheusPrefix?: string;
+    /** Override the Chart.js script URL (e.g. to self-host under a strict CSP) */
+    chartjsUrl?: string;
+    /** Override the Chart.js date adapter script URL */
+    chartAdapterUrl?: string;
+    /**
+     * Render charts with a built-in, dependency-free inline SVG renderer instead
+     * of loading Chart.js from a CDN. Works fully offline and under a strict CSP
+     * (no external scripts). Default: false.
+     */
+    inlineCharts?: boolean;
+    /**
+     * Optional key-value store (Cloudflare KV / Durable Object stub / any object
+     * implementing {@link StatusStore}) used on edge to aggregate request metrics
+     * across isolates, which otherwise each hold their own counters. No-op on Node.
+     */
+    store?: StatusStore;
+    /** Stable id for this instance/isolate when using `store` (default: random). */
+    instanceId?: string;
+    /**
+     * How often (ms) to persist this instance's metrics to `store`. Kept high to
+     * respect KV write limits. Default: 60000.
+     */
+    storeWriteInterval?: number;
+}
+
+/**
+ * Minimal key-value store contract compatible with Cloudflare KV and easy to
+ * back with a Durable Object or any custom store. Used for edge aggregation.
+ */
+export interface StatusStore {
+    get(key: string): Promise<string | null>;
+    put(key: string, value: string, options?: { expirationTtl?: number }): Promise<void>;
+    list(options?: { prefix?: string }): Promise<{ keys: { name: string }[] }>;
+}
+
+/**
+ * Emitted through `onAlert` when a threshold crosses in either direction.
+ */
+export interface AlertEvent {
+    /** Which metric changed state */
+    metric: keyof AlertStatus;
+    /** true = now breaching threshold, false = recovered */
+    active: boolean;
+    /** The measured value at transition time */
+    value: number;
+    /** The configured threshold for this metric */
+    threshold: number;
+    timestamp: number;
+}
+
+/**
+ * A single named health check result, as surfaced by `/health`.
+ */
+export interface NamedHealthResult extends HealthCheckResult {
+    name: string;
+}
+
+/**
+ * Aggregated health report returned by the `/health` endpoint.
+ */
+export interface HealthReport {
+    status: 'ok' | 'degraded';
+    uptime: number;
+    timestamp: number;
+    checks: NamedHealthResult[];
 }
 
 /**
@@ -179,6 +266,8 @@ export interface MetricsSnapshot {
     workers?: WorkerInfo[];
     /** Number of workers in cluster mode */
     workerCount?: number;
+    /** Number of edge isolates aggregated (when using a store) */
+    instanceCount?: number;
     /** Whether running in edge mode with limited metrics */
     isEdgeMode?: boolean;
 }
@@ -229,6 +318,12 @@ export interface DashboardProps {
     socketPath: string;
     title: string;
     pollingInterval?: number;
+    /** Override the Chart.js script URL */
+    chartjsUrl?: string;
+    /** Override the Chart.js date adapter script URL */
+    chartAdapterUrl?: string;
+    /** Use the built-in dependency-free inline SVG chart renderer */
+    inlineCharts?: boolean;
 }
 
 /**
@@ -237,20 +332,22 @@ export interface DashboardProps {
 export interface StatusMonitor {
     /** Hono middleware for tracking requests */
     middleware: (c: any, next: () => Promise<void>) => Promise<void>;
+    /** Pre-configured Hono routes (dashboard, API, health, prometheus, stream) */
+    routes: unknown;
     /** Initialize server (returns null, kept for backwards compatibility) */
-    initSocket: (server: any) => null;
+    initSocket: (server?: any) => null;
     /** Get current metrics snapshot */
     getMetrics: () => Promise<MetricsSnapshot>;
     /** Get chart data */
     getCharts: () => ChartData;
-    /** Start metrics collection */
-    start: () => void;
-    /** Stop metrics collection */
-    stop: () => void;
+    /** Get the aggregated health report (same payload as GET /health) */
+    getHealth: () => Promise<HealthReport>;
     /** Track a rate limit event */
     trackRateLimit: (blocked: boolean) => void;
-    /** Get dashboard HTML */
-    getDashboard: () => Promise<string>;
-    /** Configuration */
-    config: Required<StatusMonitorConfig>;
+    /** Reset all accumulated request/route/error counters */
+    resetStats: () => void;
+    /** Stop metrics collection */
+    stop: () => void;
+    /** Whether running in edge mode */
+    isEdgeMode: boolean;
 }

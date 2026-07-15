@@ -4,6 +4,7 @@
 // =============================================================================
 
 import * as os from 'os';
+import { monitorEventLoopDelay, PerformanceObserver } from 'perf_hooks';
 import type {
     StatusMonitorConfig,
     MetricDataPoint,
@@ -11,9 +12,14 @@ import type {
     RouteStats,
     ErrorEntry,
     AlertStatus,
+    AlertEvent,
     DatabaseStats,
+    HealthCheckResult,
     MetricsSnapshot,
     ChartData,
+    NamedHealthResult,
+    HealthReport,
+    StatusStore,
     WorkerMetricsMessage
 } from './types.js';
 import {
@@ -35,6 +41,7 @@ const DEFAULT_CONFIG: Required<StatusMonitorConfig> = {
     retentionSeconds: 60,
     maxRecentErrors: 10,
     maxRoutes: 10,
+    maxTrackedRoutes: 1000,
     alerts: {
         cpu: 80,
         memory: 90,
@@ -43,8 +50,19 @@ const DEFAULT_CONFIG: Required<StatusMonitorConfig> = {
         eventLoopLag: 100
     },
     healthCheck: async () => ({ connected: true, latencyMs: 0 }),
+    healthChecks: undefined as unknown as Record<string, () => Promise<HealthCheckResult>>,
     normalizePath: (path: string) => path,
-    clusterMode: undefined as unknown as boolean // Will be auto-detected
+    clusterMode: undefined as unknown as boolean, // Will be auto-detected
+    authorize: undefined as unknown as (c: any) => boolean | Promise<boolean>,
+    onAlert: undefined as unknown as (event: AlertEvent) => void,
+    prometheus: true,
+    prometheusPrefix: 'hono',
+    chartjsUrl: undefined as unknown as string,
+    chartAdapterUrl: undefined as unknown as string,
+    inlineCharts: false,
+    store: undefined as unknown as StatusStore,
+    instanceId: undefined as unknown as string,
+    storeWriteInterval: 60000
 };
 
 /**
@@ -61,7 +79,9 @@ export function createMonitor(userConfig: StatusMonitorConfig = {}) {
         clusterMode: inClusterMode
     };
 
-    const clusterAggregator: ClusterAggregator | null = inClusterMode ? createClusterAggregator() : null;
+    const clusterAggregator: ClusterAggregator | null = inClusterMode
+        ? createClusterAggregator({ maxRoutes: config.maxRoutes })
+        : null;
 
     // In-memory metrics storage
     let cpuHistory: MetricDataPoint[] = [];
@@ -97,12 +117,49 @@ export function createMonitor(userConfig: StatusMonitorConfig = {}) {
     // GC tracking
     let lastHeapUsed = 0;
     let heapGrowthRate = 0;
+    let gcCollections = 0;
+    let gcPauseTimeMs = 0;
 
     // CPU tracking
     let lastCpuInfo: os.CpuInfo[] | null = null;
 
-    // Event loop lag tracking
+    // Event loop lag tracking (falls back to interval drift if perf_hooks histogram unavailable)
     let lastLoopTime = Date.now();
+    let eventLoopHistogram: ReturnType<typeof monitorEventLoopDelay> | null = null;
+    // GC observer (best-effort; not every runtime emits 'gc' entries)
+    let gcObserver: PerformanceObserver | null = null;
+
+    // Arm the high-resolution event-loop histogram and GC observer. Idempotent and
+    // called from start(), so a stop()/start() cycle re-arms instrumentation instead
+    // of silently degrading to the interval-drift fallback with frozen GC counters.
+    function enableInstrumentation(): void {
+        if (!eventLoopHistogram) {
+            try {
+                eventLoopHistogram = monitorEventLoopDelay({ resolution: 20 });
+                eventLoopHistogram.enable();
+            } catch {
+                eventLoopHistogram = null;
+            }
+        }
+        if (!gcObserver) {
+            try {
+                gcObserver = new PerformanceObserver((list) => {
+                    for (const entry of list.getEntries()) {
+                        gcCollections++;
+                        gcPauseTimeMs += entry.duration;
+                    }
+                });
+                gcObserver.observe({ entryTypes: ['gc'] });
+            } catch {
+                gcObserver = null;
+            }
+        }
+    }
+
+    // Alert transition state (for onAlert callbacks)
+    let lastAlertState: AlertStatus = {
+        cpu: false, memory: false, responseTime: false, errorRate: false, eventLoopLag: false
+    };
 
     // Database latency tracking
     let dbLatency = 0;
@@ -200,19 +257,21 @@ export function createMonitor(userConfig: StatusMonitorConfig = {}) {
         return round((usedMem / totalMem) * 100, 1);
     }
 
+    // Pure read — safe to call from snapshots/dashboard polls without skewing growth rate.
     function getHeapUsage(): { used: number; total: number } {
         const mem = process.memoryUsage();
-        const used = round(mem.heapUsed / (1024 * 1024), 1);
+        return {
+            used: round(mem.heapUsed / (1024 * 1024), 1),
+            total: round(mem.heapTotal / (1024 * 1024), 1)
+        };
+    }
 
+    // Growth rate is sampled once per collection interval only.
+    function measureHeapGrowth(used: number): void {
         if (lastHeapUsed > 0) {
             heapGrowthRate = used - lastHeapUsed;
         }
         lastHeapUsed = used;
-
-        return {
-            used,
-            total: round(mem.heapTotal / (1024 * 1024), 1)
-        };
     }
 
     function getLoadAverage(): number {
@@ -225,13 +284,20 @@ export function createMonitor(userConfig: StatusMonitorConfig = {}) {
     }
 
     function measureEventLoopLag(): number {
+        // Prefer the high-resolution histogram when available.
+        if (eventLoopHistogram) {
+            const meanMs = eventLoopHistogram.mean / 1e6; // ns -> ms
+            eventLoopHistogram.reset();
+            if (Number.isFinite(meanMs)) {
+                return round(meanMs, 1);
+            }
+        }
+
+        // Fallback: interval drift.
         const now = Date.now();
-        const expectedInterval = config.updateInterval;
         const actualInterval = now - lastLoopTime;
         lastLoopTime = now;
-
-        const lag = Math.max(0, actualInterval - expectedInterval);
-        return round(lag, 1);
+        return round(Math.max(0, actualInterval - config.updateInterval), 1);
     }
 
     function getTopRoutes(): RouteStats[] {
@@ -276,17 +342,62 @@ export function createMonitor(userConfig: StatusMonitorConfig = {}) {
         };
     }
 
+    // Fire onAlert only on OK<->breached transitions, not every tick.
+    function fireAlertTransitions(): void {
+        if (!config.onAlert) return;
+
+        const current = checkAlerts();
+        const values: Record<keyof AlertStatus, number> = {
+            cpu: cpuHistory.length > 0 ? cpuHistory[cpuHistory.length - 1].value : 0,
+            memory: getMemoryPercent(),
+            responseTime: responseTimeHistory.length > 0 ? responseTimeHistory[responseTimeHistory.length - 1].value : 0,
+            errorRate: getErrorRate(),
+            eventLoopLag: eventLoopLagHistory.length > 0 ? eventLoopLagHistory[eventLoopLagHistory.length - 1].value : 0
+        };
+        const thresholds: Record<keyof AlertStatus, number> = {
+            cpu: config.alerts.cpu ?? 80,
+            memory: config.alerts.memory ?? 90,
+            responseTime: config.alerts.responseTime ?? 500,
+            errorRate: config.alerts.errorRate ?? 5,
+            eventLoopLag: config.alerts.eventLoopLag ?? 100
+        };
+
+        (Object.keys(current) as (keyof AlertStatus)[]).forEach((metric) => {
+            if (current[metric] !== lastAlertState[metric]) {
+                try {
+                    config.onAlert!({
+                        metric,
+                        active: current[metric],
+                        value: values[metric],
+                        threshold: thresholds[metric],
+                        timestamp: Date.now()
+                    });
+                } catch {
+                    // Never let a user callback break the metrics loop.
+                }
+            }
+        });
+        lastAlertState = current;
+    }
+
     async function getDatabaseStats(): Promise<DatabaseStats> {
         try {
             const start = performance.now();
             const result = await config.healthCheck();
             dbLatency = round(performance.now() - start);
 
+            // Pool figures are only meaningful if the health check surfaces them.
+            const details = (result.details ?? {}) as Record<string, number>;
+            const poolSize = typeof details.poolSize === 'number' ? details.poolSize : 0;
+            const available = typeof details.availableConnections === 'number'
+                ? details.availableConnections
+                : (result.connected ? poolSize : 0);
+
             return {
                 connected: result.connected,
-                poolSize: 10,
-                availableConnections: result.connected ? 10 : 0,
-                waitQueueSize: 0,
+                poolSize,
+                availableConnections: available,
+                waitQueueSize: typeof details.waitQueueSize === 'number' ? details.waitQueueSize : 0,
                 latencyMs: result.latencyMs || dbLatency,
                 name: result.name
             };
@@ -301,6 +412,42 @@ export function createMonitor(userConfig: StatusMonitorConfig = {}) {
         }
     }
 
+    // Run all configured named health checks (falls back to the single healthCheck).
+    async function getHealthReport(): Promise<HealthReport> {
+        const checks = config.healthChecks
+            ? Object.entries(config.healthChecks)
+            : ([['database', config.healthCheck]] as [string, () => Promise<HealthCheckResult>][]);
+
+        const results: NamedHealthResult[] = await Promise.all(
+            checks.map(async ([name, fn]) => {
+                try {
+                    const start = performance.now();
+                    const r = await fn();
+                    return {
+                        name: r.name || name,
+                        connected: r.connected,
+                        latencyMs: r.latencyMs || round(performance.now() - start),
+                        details: r.details
+                    };
+                } catch (err) {
+                    return {
+                        name,
+                        connected: false,
+                        latencyMs: 0,
+                        details: { error: err instanceof Error ? err.message : String(err) }
+                    };
+                }
+            })
+        );
+
+        return {
+            status: results.every(r => r.connected) ? 'ok' : 'degraded',
+            uptime: Math.round(process.uptime()),
+            timestamp: Date.now(),
+            checks: results
+        };
+    }
+
     function addToHistory(history: MetricDataPoint[], value: number): void {
         const now = Date.now();
         history.push({ timestamp: now, value });
@@ -313,6 +460,7 @@ export function createMonitor(userConfig: StatusMonitorConfig = {}) {
 
     async function updateMetrics(): Promise<void> {
         const heap = getHeapUsage();
+        measureHeapGrowth(heap.used);
         const eventLoopLag = measureEventLoopLag();
         const errorRate = getErrorRate();
 
@@ -322,6 +470,8 @@ export function createMonitor(userConfig: StatusMonitorConfig = {}) {
         addToHistory(loadAvgHistory, getLoadAverage());
         addToHistory(eventLoopLagHistory, eventLoopLag);
         addToHistory(errorRateHistory, errorRate);
+
+        fireAlertTransitions();
 
         const now = Date.now();
         const elapsedSeconds = Math.max((now - lastRpsUpdateTime) / 1000, config.updateInterval / 1000);
@@ -387,8 +537,8 @@ export function createMonitor(userConfig: StatusMonitorConfig = {}) {
             recentErrors: [...recentErrors],
             alerts: checkAlerts(),
             gc: {
-                collections: 0,
-                pauseTimeMs: 0,
+                collections: gcCollections,
+                pauseTimeMs: round(gcPauseTimeMs),
                 heapGrowthRate: round(heapGrowthRate)
             },
             database: db,
@@ -419,6 +569,7 @@ export function createMonitor(userConfig: StatusMonitorConfig = {}) {
         const key = `${method}:${normalizedPath}`;
 
         if (!routeStats.has(key)) {
+            evictRoutesIfNeeded();
             routeStats.set(key, {
                 path: normalizedPath,
                 method,
@@ -431,6 +582,20 @@ export function createMonitor(userConfig: StatusMonitorConfig = {}) {
                 lastAccess: Date.now()
             });
         }
+    }
+
+    // Cap distinct tracked routes; evict least-recently-accessed to bound memory.
+    function evictRoutesIfNeeded(): void {
+        if (routeStats.size < config.maxTrackedRoutes) return;
+        let oldestKey: string | null = null;
+        let oldestAccess = Infinity;
+        for (const [k, v] of routeStats) {
+            if (v.lastAccess < oldestAccess) {
+                oldestAccess = v.lastAccess;
+                oldestKey = k;
+            }
+        }
+        if (oldestKey) routeStats.delete(oldestKey);
     }
 
     function trackRequestComplete(
@@ -486,6 +651,7 @@ export function createMonitor(userConfig: StatusMonitorConfig = {}) {
     function start(): void {
         if (!metricsInterval) {
             lastLoopTime = Date.now();
+            enableInstrumentation();
             metricsInterval = setInterval(updateMetrics, config.updateInterval);
             console.log('📊 Status monitor started');
         }
@@ -497,6 +663,36 @@ export function createMonitor(userConfig: StatusMonitorConfig = {}) {
             metricsInterval = null;
             console.log('📊 Status monitor stopped');
         }
+        try { eventLoopHistogram?.disable(); } catch { /* ignore */ }
+        eventLoopHistogram = null;
+        try { gcObserver?.disconnect(); } catch { /* ignore */ }
+        gcObserver = null;
+    }
+
+    // Clear all accumulated request/route/error counters (system gauges are live).
+    function resetStats(): void {
+        cpuHistory = [];
+        memoryHistory = [];
+        heapHistory = [];
+        loadAvgHistory = [];
+        responseTimeHistory = [];
+        rpsHistory = [];
+        eventLoopLagHistory = [];
+        errorRateHistory = [];
+        requestCount = 0;
+        lastRequestCount = 0;
+        totalResponseTime = 0;
+        responseTimeCount = 0;
+        statusCodes = {};
+        totalRequests = 0;
+        activeConnections = 0;
+        routeStats.clear();
+        recentErrors.length = 0;
+        responseTimeSamples = [];
+        rateLimitBlocked = 0;
+        rateLimitTotal = 0;
+        gcCollections = 0;
+        gcPauseTimeMs = 0;
     }
 
     // initSocket is now a no-op for backwards compatibility
@@ -546,6 +742,8 @@ export function createMonitor(userConfig: StatusMonitorConfig = {}) {
         trackRateLimitEvent,
         getMetricsSnapshot: getAggregatedSnapshot,
         getChartData: getAggregatedCharts,
+        getHealthReport,
+        resetStats,
         start,
         stop,
         initSocket,

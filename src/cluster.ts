@@ -19,7 +19,10 @@ import { round } from './metrics-utils.js';
  * Check if running in cluster mode (PM2 or native Node.js cluster)
  */
 export function isClusterWorker(): boolean {
-    return cluster.isWorker || !!process.env.PM2_HOME || !!process.env.NODE_APP_INSTANCE;
+    // NOTE: PM2_HOME alone is not used — it is present for the whole shell whenever
+    // PM2 is installed and would wrongly flag a plain `node app.js` as a cluster worker.
+    // NODE_APP_INSTANCE is set per PM2 instance and is the reliable signal.
+    return cluster.isWorker || !!process.env.NODE_APP_INSTANCE;
 }
 
 /**
@@ -83,9 +86,12 @@ interface WorkerMetricsStore {
 /**
  * Create a cluster aggregator for the master process
  */
-export function createClusterAggregator() {
+export function createClusterAggregator(options: { maxRoutes?: number } = {}) {
     const workerMetrics: WorkerMetricsStore = {};
     const WORKER_TIMEOUT_MS = 10000; // Consider worker dead after 10s no update
+    // Match the single-instance route-list cap (config.maxRoutes) so aggregated
+    // views aren't silently truncated shorter than a per-worker view.
+    const maxRoutes = options.maxRoutes ?? 10;
 
     /**
      * Update metrics from a worker
@@ -185,14 +191,14 @@ export function createClusterAggregator() {
                 totalRateLimitTotal += m.rateLimitStats.total || 0;
             }
 
-            // Aggregate routes
-            const allRoutes = [
-                ...(m.topRoutes || []),
-                ...(m.slowestRoutes || []),
-                ...(m.errorRoutes || [])
-            ];
+            // Aggregate routes. topRoutes/slowestRoutes/errorRoutes overlap heavily,
+            // so dedupe by key WITHIN a worker first to avoid counting a route 2-3x.
+            const perWorkerRoutes = new Map<string, RouteStats>();
+            for (const route of [...(m.topRoutes || []), ...(m.slowestRoutes || []), ...(m.errorRoutes || [])]) {
+                perWorkerRoutes.set(`${route.method}:${route.path}`, route);
+            }
 
-            for (const route of allRoutes) {
+            for (const route of perWorkerRoutes.values()) {
                 const key = `${route.method}:${route.path}`;
                 const existing = routeMap.get(key);
 
@@ -217,9 +223,9 @@ export function createClusterAggregator() {
 
         // Get aggregated routes
         const allRoutes = Array.from(routeMap.values());
-        const topRoutes = allRoutes.sort((a, b) => b.count - a.count).slice(0, 10);
-        const slowestRoutes = allRoutes.filter(r => r.count > 0).sort((a, b) => b.avgTime - a.avgTime).slice(0, 10);
-        const errorRoutes = allRoutes.filter(r => r.errors > 0).sort((a, b) => b.errors - a.errors).slice(0, 10);
+        const topRoutes = allRoutes.sort((a, b) => b.count - a.count).slice(0, maxRoutes);
+        const slowestRoutes = allRoutes.filter(r => r.count > 0).sort((a, b) => b.avgTime - a.avgTime).slice(0, maxRoutes);
+        const errorRoutes = allRoutes.filter(r => r.errors > 0).sort((a, b) => b.errors - a.errors).slice(0, maxRoutes);
 
         return {
             ...baseSnapshot,
@@ -320,3 +326,58 @@ export function createClusterAggregator() {
 }
 
 export type ClusterAggregator = ReturnType<typeof createClusterAggregator>;
+
+/**
+ * Wire up metrics relaying in the primary/master process.
+ *
+ * Call this ONCE in your cluster entry file after forking workers. It listens
+ * for `worker-metrics` IPC messages and broadcasts them to every worker so each
+ * worker's dashboard can render the aggregated view — no Redis or external
+ * store required.
+ *
+ * @example
+ * ```typescript
+ * import cluster from 'node:cluster';
+ * import { setupClusterPrimary } from 'hono-status-monitor';
+ *
+ * if (cluster.isPrimary) {
+ *     for (let i = 0; i < os.cpus().length; i++) cluster.fork();
+ *     setupClusterPrimary(); // relays + auto-replaces dead workers
+ * } else {
+ *     await import('./server.js');
+ * }
+ * ```
+ *
+ * @param options.respawn Re-fork a worker when one exits (default: true)
+ */
+export function setupClusterPrimary(options: { respawn?: boolean } = {}): void {
+    if (!isClusterMaster()) return;
+    const { respawn = true } = options;
+
+    const broadcast = (message: unknown) => {
+        if (
+            message &&
+            typeof message === 'object' &&
+            'type' in message &&
+            (message as WorkerMetricsMessage).type === 'worker-metrics'
+        ) {
+            for (const id in cluster.workers) {
+                cluster.workers[id]?.send(message);
+            }
+        }
+    };
+
+    const attach = (worker: import('cluster').Worker) => worker.on('message', broadcast);
+
+    for (const id in cluster.workers) {
+        const worker = cluster.workers[id];
+        if (worker) attach(worker);
+    }
+    cluster.on('fork', attach);
+
+    if (respawn) {
+        cluster.on('exit', () => {
+            cluster.fork();
+        });
+    }
+}

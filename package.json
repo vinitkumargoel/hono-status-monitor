@@ -1,6 +1,6 @@
 {
     "name": "hono-status-monitor",
-    "version": "1.0.8",
+    "version": "1.0.9",
     "description": "Real-time server monitoring dashboard for Hono.js. Works with Node.js, Bun, and Cloudflare Workers. Express-status-monitor style metrics with polling updates.",
     "main": "dist/index.js",
     "types": "dist/index.d.ts",
@@ -8,13 +8,11 @@
     "exports": {
         ".": {
             "types": "./dist/index.d.ts",
-            "import": "./dist/index.js",
-            "require": "./dist/index.js"
+            "import": "./dist/index.js"
         },
         "./edge": {
             "types": "./dist/index-edge.d.ts",
-            "import": "./dist/index-edge.js",
-            "require": "./dist/index-edge.js"
+            "import": "./dist/index-edge.js"
         }
     },
     "files": [

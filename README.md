@@ -4,490 +4,191 @@
 [![npm downloads](https://img.shields.io/npm/dw/hono-status-monitor.svg?style=flat-square)](https://www.npmjs.com/package/hono-status-monitor)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg?style=flat-square)](https://opensource.org/licenses/MIT)
 
-Real-time server monitoring dashboard for **Hono.js** applications. Works with **Node.js**, **Bun**, and **Cloudflare Workers**.
+Real-time monitoring dashboard for **Hono.js** — one middleware, a zero-dependency dashboard, plus **Prometheus**, **health-check** and **SSE** endpoints. Runs on **Node.js**, **Bun**, and **Cloudflare Workers / Edge**.
 
 > **Trusted by the Hono community:** 4,000+ weekly npm downloads and growing.
 
-<img width="403" height="736" alt="Screenshot 2026-01-01 at 11 58 25 AM" src="https://github.com/user-attachments/assets/f793b5f0-a10e-4699-98ab-b4708703d024" />
+<img width="403" alt="dashboard" src="https://github.com/user-attachments/assets/f793b5f0-a10e-4699-98ab-b4708703d024" />
 
+## Features
 
-## ✨ Features
+- **Live metrics** — CPU, memory, heap, load, response time, RPS, event-loop lag (real `perf_hooks` histogram) + GC stats.
+- **Analytics** — P50/P95/P99 latency, top / slowest / error routes, status-code breakdown, recent errors.
+- **Endpoints** — HTML dashboard, JSON API, **`/prometheus`** scrape, **`/health`** (200/503), **`/api/stream`** SSE.
+- **Auth hook, alert callbacks, multiple named health checks, dark mode, cluster (PM2) aggregation.**
+- **Safe by default** — route paths are HTML-escaped (no stored XSS), route map is LRU-capped (no unbounded memory growth).
 
-| Feature | Description |
-|---------|-------------|
-| **7 Real-Time Metrics** | CPU, Memory, Heap, Load Average, Response Time, RPS, Event Loop Lag |
-| **Response Percentiles** | P50, P95, P99 latency tracking for accurate performance insights |
-| **Route Analytics** | Top routes by traffic, slowest routes, routes with most errors |
-| **Error Tracking** | Recent errors with timestamps, paths, and status codes |
-| **Visual Alerts** | Automatic warnings when CPU >80%, Memory >90%, Response >500ms |
-| **Dark Mode** | Toggle with localStorage persistence |
-| **Polling Updates** | Configurable polling interval (1s default for Node.js/Bun, 5s for edge) |
-| **Bun Support** | Works with Bun.serve and full server-side metrics |
-| **Edge Support** | Works in Cloudflare Workers and edge runtimes |
-| **Configurable** | Custom thresholds, paths, titles, polling intervals, and more |
-
-## Runtime Support
+## Runtime support
 
 | Runtime | Import | Server | Metrics |
-|---------|--------|--------|---------|
-| Node.js | `hono-status-monitor` | `@hono/node-server` | Full system and request metrics |
-| Bun | `hono-status-monitor` | `Bun.serve` | Full system and request metrics |
-| Cloudflare Workers / Edge | `hono-status-monitor/edge` | Runtime default export | Request metrics only |
+|---|---|---|---|
+| Node.js | `hono-status-monitor` | `@hono/node-server` | Full system + request |
+| Bun | `hono-status-monitor` | `Bun.serve` | Full system + request |
+| Cloudflare / Edge | `hono-status-monitor/edge` | runtime default | Request-only (no CPU/mem/heap) |
 
-
-## 📦 Installation
-
-```bash
-npm install hono-status-monitor
-# or
-yarn add hono-status-monitor
-# or
-pnpm add hono-status-monitor
-# or
-bun add hono-status-monitor
-```
-
-## 🚀 Node.js Quick Start
-
-Install the Node server adapter if your app does not already have it:
+## Install
 
 ```bash
-npm install @hono/node-server
+npm install hono-status-monitor          # + npm install @hono/node-server for Node
 ```
+
+## Quick start (Node.js / Bun)
 
 ```typescript
 import { Hono } from 'hono';
-import { serve } from '@hono/node-server';
+import { serve } from '@hono/node-server';      // omit for Bun
 import { statusMonitor } from 'hono-status-monitor';
 
 const app = new Hono();
-
-// Create status monitor
 const monitor = statusMonitor();
 
-// Add middleware to track ALL requests (must be first!)
-app.use('*', monitor.middleware);
-
-// Mount status dashboard at /status
-app.route('/status', monitor.routes);
-
-// Your routes
+app.use('*', monitor.middleware);               // must be first — tracks all requests
+app.route('/status', monitor.routes);           // mount dashboard + endpoints
 app.get('/', (c) => c.text('Hello World!'));
 
-// Start server
-const server = serve({ fetch: app.fetch, port: 3000 });
-
-// Optional: initSocket is now a no-op, can be removed
-// monitor.initSocket(server);
-
-console.log('📊 Status monitor: http://localhost:3000/status');
+serve({ fetch: app.fetch, port: 3000 });        // or Bun.serve({ fetch: app.fetch, port: 3000 })
+// → dashboard at http://localhost:3000/status
 ```
 
-## Bun Quick Start
+> If you mount at a non-default path, set `path` to match (e.g. `statusMonitor({ path: '/mystatus' })`) so the dashboard's own polling isn't counted as traffic.
 
-Use the default import with Bun. You do not need `@hono/node-server`; Hono runs directly through `Bun.serve`.
+## Cloudflare Workers / Edge
+
+Use the `/edge` entry (zero Node.js deps — the main entry pulls in `os`/`cluster` and won't bundle for Workers):
 
 ```typescript
 import { Hono } from 'hono';
-import { statusMonitor } from 'hono-status-monitor';
+import { statusMonitor } from 'hono-status-monitor/edge';
 
 const app = new Hono();
-const monitor = statusMonitor();
-
+const monitor = statusMonitor({ pollingInterval: 3000 });
 app.use('*', monitor.middleware);
 app.route('/status', monitor.routes);
-
-app.get('/', (c) => c.text('Hello Bun!'));
-
-Bun.serve({
-    fetch: app.fetch,
-    port: 3000
-});
-
-console.log('Status monitor: http://localhost:3000/status');
+export default app;
 ```
 
-## ⚙️ Configuration
+Edge exposes request metrics only (CPU/memory/heap/event-loop/load and the SSE stream are unavailable). Each isolate keeps its own counters.
 
-```typescript
-const monitor = statusMonitor({
-    // Dashboard path (default: '/status')
-    path: '/status',
-    
-    // Dashboard title (default: 'Server Status')
-    title: 'My App Status',
-    
-    // Dashboard polling interval in ms (default: 1000 for Node.js/Bun, 5000 for edge)
-    pollingInterval: 1000,
-    
-    // Metrics collection interval in ms (default: 1000)
-    updateInterval: 1000,
-    
-    // History retention in seconds (default: 60)
-    retentionSeconds: 60,
-    
-    // Max recent errors to store (default: 10)
-    maxRecentErrors: 10,
-    
-    // Max routes to show in analytics (default: 10)
-    maxRoutes: 10,
-    
-    // Alert thresholds
-    alerts: {
-        cpu: 80,           // CPU percentage
-        memory: 90,        // Memory percentage
-        responseTime: 500, // Response time in ms
-        errorRate: 5,      // Error rate percentage
-        eventLoopLag: 100  // Event loop lag in ms
-    },
-    
-    // Custom database health check (optional)
-    healthCheck: async () => {
-        const start = performance.now();
-        await mongoose.connection.db?.admin().ping();
-        return {
-            connected: mongoose.connection.readyState === 1,
-            latencyMs: performance.now() - start,
-            name: 'MongoDB'
-        };
-    },
-    
-    // Custom path normalization (optional)
-    normalizePath: (path) => {
-        return path
-            .replace(/\/users\/\d+/g, '/users/:id')
-            .replace(/\/posts\/[a-f0-9]{24}/g, '/posts/:id');
-    },
-    
-    // Enable cluster mode for PM2 (auto-detected by default)
-    clusterMode: true
-});
-```
-
-## 📊 Dashboard Sections
-
-### Header
-- Server hostname
-- Connection status (Live/Offline)
-- Dark mode toggle
-
-### Stats Bar
-- Uptime
-- Total requests
-- Active connections
-- Error rate
-
-### Response Percentiles
-- Average response time
-- P50 (median)
-- P95
-- P99
-
-### Real-Time Charts
-- CPU usage
-- Memory usage (MB)
-- Heap usage (MB)
-- Load average
-- Response time (ms)
-- Requests per second
-- Event loop lag (ms)
-
-### Route Analytics
-- 🔥 Top Routes (by request count)
-- 🐢 Slowest Routes (by avg response time)
-
-### HTTP Status Codes
-- 2xx success count
-- 3xx redirect count
-- 4xx client error count
-- 5xx server error count
-- Rate limited count
-
-### Recent Errors
-- Last 10 errors with timestamp, path, and status code
-
-### Health Checks
-- Database connection status and latency
-- Heap total and growth rate
-
-### Process Info
-- Runtime version
-- Platform
-- PID
-- CPU count
-
-## 🔌 API Endpoints
+## Endpoints
 
 | Endpoint | Description |
-|----------|-------------|
-| `GET /status` | Dashboard HTML page |
-| `GET /status/api/metrics` | JSON API with full metrics snapshot |
+|---|---|
+| `GET /status` | Dashboard HTML |
+| `GET /status/api/metrics` | `{ snapshot, charts }` JSON |
+| `GET /status/api/stream` | SSE stream of the same JSON (Node/Bun only) |
+| `GET /status/health` | `{ status, uptime, checks }` — **200** if all checks pass, **503** if degraded |
+| `GET /status/prometheus` | Prometheus/OpenMetrics text (disable via `prometheus: false`) |
 
-### JSON API Response
+## Configuration
 
-```json
-{
-  "snapshot": {
-    "timestamp": 1704067200000,
-    "cpu": 12.5,
-    "memoryMB": 256.4,
-    "memoryPercent": 15.8,
-    "heapUsedMB": 48.2,
-    "heapTotalMB": 64.0,
-    "loadAvg": 1.25,
-    "uptime": 86400,
-    "processUptime": 3600,
-    "responseTime": 15.4,
-    "rps": 125,
-    "totalRequests": 450000,
-    "activeConnections": 42,
-    "eventLoopLag": 2.1,
-    "percentiles": {
-      "avg": 15.4,
-      "p50": 12.0,
-      "p95": 45.0,
-      "p99": 120.0
-    },
-    "topRoutes": [...],
-    "slowestRoutes": [...],
-    "recentErrors": [...],
-    "alerts": {
-      "cpu": false,
-      "memory": false,
-      "responseTime": false,
-      "errorRate": false,
-      "eventLoopLag": false
-    },
-    "database": {
-      "connected": true,
-      "latencyMs": 1.2
-    }
+```typescript
+statusMonitor({
+  path: '/status',              // mount path (keep in sync with app.route)
+  title: 'My App Status',
+  pollingInterval: 1000,        // dashboard refresh ms (Node 1000 / edge 5000) — now honored on Node too
+  updateInterval: 1000,         // metrics sampling ms
+  retentionSeconds: 60,         // chart history window
+  maxRecentErrors: 10,
+  maxRoutes: 10,                // routes shown in analytics
+  maxTrackedRoutes: 1000,       // hard cap on distinct routes in memory (LRU eviction)
+
+  alerts: { cpu: 80, memory: 90, responseTime: 500, errorRate: 5, eventLoopLag: 100 },
+
+  // Fired once on each OK <-> breached transition (wire to Slack/webhooks)
+  onAlert: (e) => console.warn(`${e.metric} ${e.active ? 'ALERT' : 'recovered'} @ ${e.value}`),
+
+  // Guard the whole /status surface; falsy return => 401
+  authorize: (c) => c.req.header('x-admin-token') === process.env.ADMIN_TOKEN,
+
+  // One or many named health checks (surfaced on /health and the dashboard)
+  healthChecks: {
+    mongo: async () => ({ connected: mongoose.connection.readyState === 1, latencyMs: 2 }),
+    redis: async () => ({ connected: await redis.ping() === 'PONG', latencyMs: 1 }),
   },
-  "charts": {
-    "cpu": [{ "timestamp": 1704067200000, "value": 12.5 }, ...],
-    "memory": [...],
-    "heap": [...],
-    "loadAvg": [...],
-    "responseTime": [...],
-    "rps": [...],
-    "eventLoopLag": [...],
-    "errorRate": [...]
-  }
-}
-```
 
-For teams pairing application telemetry with external risk awareness, ThreatFrontier is a [best cybersecurity news website](https://threatfrontier.com/) for tracking emerging threats, CVEs, and security research.
-
-## 🎛️ Advanced Usage
-
-### Rate Limit Tracking
-
-```typescript
-// In your rate limiter middleware
-import { monitor } from './your-app';
-
-if (isRateLimited) {
-    monitor.trackRateLimit(true);  // Track blocked request
-    return c.text('Too many requests', 429);
-}
-monitor.trackRateLimit(false);  // Track allowed request
-```
-
-### Custom Path Normalization
-
-Group similar routes for meaningful analytics:
-
-```typescript
-const monitor = statusMonitor({
-    normalizePath: (path) => {
-        return path
-            // Replace user IDs
-            .replace(/\/users\/\d+/g, '/users/:id')
-            // Replace MongoDB ObjectIds
-            .replace(/\/[a-f0-9]{24}/g, '/:id')
-            // Replace UUIDs
-            .replace(/\/[0-9a-f-]{36}/g, '/:uuid');
-    }
+  prometheus: true,             // expose /prometheus
+  prometheusPrefix: 'hono',     // metric name prefix
+  chartjsUrl: '/vendor/chart.umd.js',   // self-host Chart.js under a strict CSP
+  normalizePath: (p) => p.replace(/\/users\/\d+/g, '/users/:id'),
 });
 ```
 
-### Multiple Health Checks
+Instance methods: `getMetrics()`, `getCharts()`, `getHealth()`, `trackRateLimit(blocked)`, `resetStats()`, `stop()`, plus `monitor` (underlying instance).
 
-```typescript
-const monitor = statusMonitor({
-    healthCheck: async () => {
-        const dbStart = performance.now();
-        const dbConnected = mongoose.connection.readyState === 1;
-        
-        if (dbConnected) {
-            await mongoose.connection.db?.admin().ping();
-        }
-        
-        return {
-            connected: dbConnected,
-            latencyMs: performance.now() - dbStart,
-            name: 'MongoDB'
-        };
-    }
-});
+## Prometheus / Grafana
+
+Scrape `/status/prometheus` — emits `<prefix>_cpu_percent`, `_heap_used_bytes`, `_rps`, `_response_time_p95_ms`, `_requests_total`, `_http_responses_total{code="..."}`, etc.
+
+```yaml
+scrape_configs:
+  - job_name: my-app
+    metrics_path: /status/prometheus
+    static_configs: [{ targets: ['localhost:3000'] }]
 ```
 
-### PM2 / Cluster Mode Support
+## Rate-limit tracking
 
-To enable metrics aggregation across multiple processes (Cluster Mode), you need a specific entry point script that handles message relaying between workers.
+```typescript
+if (isRateLimited) { monitor.trackRateLimit(true); return c.text('Too many requests', 429); }
+monitor.trackRateLimit(false);
+```
 
-1. **Create a `cluster.ts` (or `.js`) entry file:**
+## PM2 / Cluster mode
+
+Metrics aggregate across workers with **no Redis**. In your cluster entry file, call `setupClusterPrimary()` in the primary — it relays worker metrics to every worker and respawns dead ones:
 
 ```typescript
 import cluster from 'node:cluster';
 import * as os from 'node:os';
-import { dirname } from 'node:path';
-import { fileURLToPath } from 'node:url';
-
-const __dirname = dirname(fileURLToPath(import.meta.url));
-const numCPUs = os.cpus().length;
+import { setupClusterPrimary } from 'hono-status-monitor';
 
 if (cluster.isPrimary) {
-    console.log(`Primary ${process.pid} is running`);
-
-    // Fork workers
-    for (let i = 0; i < numCPUs; i++) {
-        const worker = cluster.fork();
-        
-        // Relay messages between workers
-        worker.on('message', (message) => {
-            if (message?.type === 'worker-metrics') {
-                // Broadcast to all workers (including sender)
-                for (const id in cluster.workers) {
-                    cluster.workers[id]?.send(message);
-                }
-            }
-        });
-    }
-
-    cluster.on('exit', (worker) => {
-        console.log(`worker ${worker.process.pid} died`);
-        // Replace dead worker
-        const newWorker = cluster.fork();
-        newWorker.on('message', (message) => {
-            if (message?.type === 'worker-metrics') {
-                for (const id in cluster.workers) {
-                    cluster.workers[id]?.send(message);
-                }
-            }
-        });
-    });
+  for (let i = 0; i < os.cpus().length; i++) cluster.fork();
+  setupClusterPrimary();                 // relay + auto-respawn
 } else {
-    // Workers share the TCP connection in this file
-    await import('./index'); // Path to your main app file
+  await import('./server.js');           // your app (auto-detects worker mode)
 }
 ```
 
-2. **Run this cluster script with PM2:**
-
 ```bash
-# Start the cluster script as a SINGLE PM2 instance
-# (The script itself manages the worker processes)
-pm2 start cluster.ts --name my-app
+pm2 start cluster.js --name my-app       # single PM2 instance; the script forks workers
 ```
 
-**Note:** Do NOT use `pm2 start app.ts -i max` directly, as PM2's default isolation prevents workers from sharing metrics without an external adapter (like Redis). Using the script above provides a zero-dependency aggregation solution.
+Don't use `pm2 start app.js -i max` directly — isolated instances can't share IPC.
 
-## 🛡️ Security Considerations
+## Security
 
-The status dashboard exposes server metrics. Consider:
-
-1. **Authentication**: Add middleware to protect the `/status` route
-2. **Rate Limiting**: Limit access to the dashboard
-3. **Internal Only**: Only expose on internal networks
+The dashboard exposes hostname, PID, routes and errors. Protect it in production:
 
 ```typescript
+// Built-in guard
+statusMonitor({ authorize: (c) => c.req.header('x-token') === process.env.STATUS_TOKEN });
+
+// …or Hono basic-auth
 import { basicAuth } from 'hono/basic-auth';
-
-// Protect status routes
-app.use('/status/*', basicAuth({
-    username: 'admin',
-    password: process.env.STATUS_PASSWORD!
-}));
-
+app.use('/status/*', basicAuth({ username: 'admin', password: process.env.STATUS_PASSWORD! }));
 app.route('/status', monitor.routes);
 ```
 
-## ☁️ Cloudflare Workers / Edge Support
+Route paths are HTML-escaped before rendering, so hostile request paths can't inject scripts into the dashboard.
 
-This package provides a separate edge entry point that has **zero Node.js/Bun dependencies**. Use it for Cloudflare Workers and other runtimes where Node-compatible system APIs are not available.
+The status surface is **public by default** — anyone who can reach the mounted path gets the dashboard, `/api/metrics`, `/api/stream`, `/prometheus` and `/health`. Set `authorize` (or front it with your own auth) in any environment where that's not acceptable. Note that when `authorize` is set it also gates `/health`; if a load balancer or k8s liveness probe hits `/health` unauthenticated, either exempt that path in your own middleware or point the probe at an unguarded route.
 
-### Available Metrics in Edge Environments
+## Notes for existing users (1.0.9)
 
-| Metric | Available | Notes |
-|--------|-----------|-------|
-| Request count & RPS | ✅ | Fully supported |
-| Response time percentiles | ✅ | P50, P95, P99, Avg |
-| Status code breakdown | ✅ | 2xx, 3xx, 4xx, 5xx |
-| Route analytics | ✅ | Top routes, slowest routes |
-| Error tracking | ✅ | Recent errors with timestamps |
-| CPU / Memory / Heap | ❌ | Not available in Workers |
-| Event loop lag | ❌ | Not available in Workers |
-| Load average | ❌ | Not available in Workers |
-| WebSocket real-time | ❌ | Uses polling (configurable, default 5s) |
+All changes are backward-compatible with the documented `statusMonitor()` factory. Two things worth a glance if you depend on internals:
 
-### Usage in Cloudflare Workers
+- **`getDatabaseStats` / `database` in the snapshot** now reports real pool numbers from your `healthCheck`'s `details.poolSize` / `details.availableConnections`, falling back to `0` instead of the previous hardcoded `10`. If your dashboards keyed off the old constant, surface the real values via `healthCheck`.
+- The exported **`StatusMonitor` type** dropped three members that the factory never actually returned (`start`, `getDashboard`, `config`) and added `getHealth`, `resetStats`, `isEdgeMode`, `routes`. Runtime behavior is unchanged; only hand-written `: StatusMonitor` annotations against the old shape need updating.
 
-> **Important:** Use the `/edge` import path for Cloudflare Workers!
+## Requirements
 
-```typescript
-import { Hono } from 'hono';
-// Use the edge-specific import (no Node.js dependencies)
-import { statusMonitor } from 'hono-status-monitor/edge';
+Node ≥ 18 · Bun ≥ 1.0 · Hono ≥ 4.0 · `@hono/node-server` ≥ 1.0 (Node only).
 
-const app = new Hono();
-
-// Create status monitor with custom polling interval
-const monitor = statusMonitor({
-    pollingInterval: 3000  // Update dashboard every 3 seconds (default: 5000)
-});
-
-// Add middleware to track requests
-app.use('*', monitor.middleware);
-
-// Mount status dashboard
-app.route('/status', monitor.routes);
-
-// Your routes
-app.get('/', (c) => c.text('Hello from Cloudflare Workers!'));
-
-export default app;
-```
-
-> **Note:** In edge environments, the dashboard uses HTTP polling instead of WebSocket for updates. The polling interval is configurable via `pollingInterval` (defaults to 5 seconds for edge, 1 second for Node.js/Bun).
-
-### Force Edge Mode in Node.js or Bun
-
-You can also use the edge-compatible monitor in Node.js or Bun if you don't need system metrics:
-
-```typescript
-import { statusMonitor } from 'hono-status-monitor/edge';
-
-const monitor = statusMonitor();
-```
-
-## 📋 Requirements
-
-- Node.js >= 18.0.0 (for Node.js mode)
-- Bun >= 1.0.0 (for Bun mode)
-- Hono.js >= 4.0.0
-- @hono/node-server >= 1.0.0 (for Node.js mode only)
-
-## 🤝 Contributing
-
-Contributions welcome! Please read the [contributing guidelines](CONTRIBUTING.md) first.
-
-## 📄 License
+## License
 
 MIT © [Vinit Kumar Goel](https://github.com/vinitkumargoel)
 
 ---
 
-Made with ❤️ for the Hono.js community
-
-Security teams can also use [top vulnerability intelligence](https://threatfrontier.com/) from ThreatFrontier to stay current on emerging CVEs and exploitation trends.
+Pairing app telemetry with external risk awareness? ThreatFrontier tracks [emerging CVEs and exploitation trends](https://threatfrontier.com/) — a solid [cybersecurity news source](https://threatfrontier.com/) for security teams.

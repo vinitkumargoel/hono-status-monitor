@@ -11,6 +11,7 @@ import { generateDashboard } from './dashboard.js';
 import { createMonitor } from './monitor.js';
 import { createMiddleware } from './middleware.js';
 import { createEdgeStatusMonitor } from './edge-status.js';
+import { createAuthGuard, registerCommonRoutes } from './routes.js';
 
 // Re-export types
 export * from './types.js';
@@ -33,8 +34,11 @@ export {
     isClusterWorker,
     isClusterMaster,
     getWorkerId,
-    createClusterAggregator
+    createClusterAggregator,
+    setupClusterPrimary
 } from './cluster.js';
+export { escapeHtml, toPrometheus } from './format.js';
+export { mergeSnapshots, generateInstanceId } from './edge-store.js';
 
 /**
  * Create a complete status monitor with routes, middleware, and WebSocket
@@ -96,6 +100,10 @@ function createNodeStatusMonitor(config: StatusMonitorConfig = {}) {
     const middleware = createMiddleware(monitor);
     const routes = new Hono();
 
+    // Optional auth guard for the whole status surface.
+    const guard = createAuthGuard(monitor.config.authorize);
+    if (guard) routes.use('*', guard);
+
     // Dashboard page
     routes.get('/', async (c) => {
         const snapshot = await monitor.getMetricsSnapshot();
@@ -103,7 +111,11 @@ function createNodeStatusMonitor(config: StatusMonitorConfig = {}) {
             hostname: snapshot.hostname,
             uptime: monitor.formatUptime(snapshot.uptime),
             socketPath: monitor.config.socketPath,
-            title: monitor.config.title
+            title: monitor.config.title,
+            pollingInterval: monitor.config.pollingInterval,
+            chartjsUrl: monitor.config.chartjsUrl,
+            chartAdapterUrl: monitor.config.chartAdapterUrl,
+            inlineCharts: monitor.config.inlineCharts
         });
         return c.html(html);
     });
@@ -115,6 +127,9 @@ function createNodeStatusMonitor(config: StatusMonitorConfig = {}) {
             charts: monitor.getChartData()
         });
     });
+
+    // /health, /prometheus and /api/stream (SSE)
+    registerCommonRoutes(routes, monitor, { enableStream: true });
 
     // Start metrics collection
     monitor.start();
@@ -132,6 +147,10 @@ function createNodeStatusMonitor(config: StatusMonitorConfig = {}) {
         getMetrics: () => monitor.getMetricsSnapshot(),
         /** Get chart data for all metrics */
         getCharts: () => monitor.getChartData(),
+        /** Get the aggregated health report (same payload as GET /health) */
+        getHealth: () => monitor.getHealthReport(),
+        /** Reset all accumulated request/route/error counters */
+        resetStats: () => monitor.resetStats(),
         /** Stop metrics collection */
         stop: () => monitor.stop(),
         /** Access to the underlying monitor instance */

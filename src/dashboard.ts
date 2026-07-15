@@ -4,19 +4,37 @@
 // =============================================================================
 
 import type { DashboardProps } from './types.js';
+import { escapeHtml } from './format.js';
+
+const DEFAULT_CHARTJS_URL = 'https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js';
+const DEFAULT_ADAPTER_URL = 'https://cdn.jsdelivr.net/npm/chartjs-adapter-date-fns@3.0.0/dist/chartjs-adapter-date-fns.bundle.min.js';
 
 /**
  * Generate the status dashboard HTML
  */
-export function generateDashboard({ hostname, uptime, socketPath, title }: DashboardProps): string {
+export function generateDashboard({
+    hostname,
+    uptime,
+    title,
+    pollingInterval = 1000,
+    chartjsUrl = DEFAULT_CHARTJS_URL,
+    chartAdapterUrl = DEFAULT_ADAPTER_URL,
+    inlineCharts = false
+}: DashboardProps): string {
+    const safeTitle = escapeHtml(title);
+    const safeHostname = escapeHtml(hostname);
+    const safeUptime = escapeHtml(uptime);
+    const chartScripts = inlineCharts
+        ? ''
+        : `<script src="${escapeHtml(chartjsUrl)}"></script>
+    <script src="${escapeHtml(chartAdapterUrl)}"></script>`;
     return `<!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>${title}</title>
-    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
-    <script src="https://cdn.jsdelivr.net/npm/chartjs-adapter-date-fns@3.0.0/dist/chartjs-adapter-date-fns.bundle.min.js"></script>
+    <title>${safeTitle}</title>
+    ${chartScripts}
     <style>
         :root {
             --bg: #fff;
@@ -206,8 +224,8 @@ export function generateDashboard({ hostname, uptime, socketPath, title }: Dashb
     <div class="container">
         <header>
             <div class="title-section">
-                <h1>${title}</h1>
-                <div class="subtitle">${hostname}</div>
+                <h1>${safeTitle}</h1>
+                <div class="subtitle">${safeHostname}</div>
             </div>
             <div class="header-controls">
                 <button class="theme-toggle" onclick="toggleTheme()" title="Toggle dark mode">🌓</button>
@@ -218,7 +236,7 @@ export function generateDashboard({ hostname, uptime, socketPath, title }: Dashb
         </header>
 
         <div class="stats-bar">
-            <div class="stat-box"><div class="label">Uptime</div><div class="value" id="uptime">${uptime}</div></div>
+            <div class="stat-box"><div class="label">Uptime</div><div class="value" id="uptime">${safeUptime}</div></div>
             <div class="stat-box"><div class="label">Requests</div><div class="value" id="totalReq">0</div></div>
             <div class="stat-box"><div class="label">Active</div><div class="value" id="activeConn">0</div></div>
             <div class="stat-box"><div class="label">Error Rate</div><div class="value" id="errorRate">0%</div></div>
@@ -270,7 +288,14 @@ export function generateDashboard({ hostname, uptime, socketPath, title }: Dashb
                 <h3>🐢 Slowest Routes</h3>
                 <div id="slowRoutes"><div class="route-item"><span class="route-path">No data yet</span></div></div>
             </div>
+            <div class="route-section">
+                <h3>💥 Error Routes</h3>
+                <div id="errRoutes"><div class="route-item"><span class="route-path">No data yet</span></div></div>
+            </div>
         </div>
+
+        <div class="section-title" id="workersSection" style="display:none">Cluster Workers</div>
+        <div class="process-grid" id="workers" style="display:none"></div>
 
         <div class="section-title">HTTP Status Codes</div>
         <div class="status-codes">
@@ -334,8 +359,39 @@ export function generateDashboard({ hostname, uptime, socketPath, title }: Dashb
                 elements: { point: { radius: 0 }, line: { tension: 0.2, borderWidth: 1.5 } }
             };
 
+            // Dependency-free inline renderer (no Chart.js / no CDN) when INLINE is true.
+            var INLINE = ${inlineCharts ? 'true' : 'false'};
+
+            function drawSpark(chart, points) {
+                var canvas = chart.canvas;
+                if (!canvas) return;
+                var w = canvas.clientWidth || 200, h = canvas.clientHeight || 50;
+                var dpr = window.devicePixelRatio || 1;
+                canvas.width = Math.max(1, Math.round(w * dpr));
+                canvas.height = Math.max(1, Math.round(h * dpr));
+                var ctx = canvas.getContext('2d');
+                ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+                ctx.clearRect(0, 0, w, h);
+                if (!points || points.length === 0) return;
+                var min = Infinity, max = -Infinity;
+                for (var i = 0; i < points.length; i++) { var v = points[i].value; if (v < min) min = v; if (v > max) max = v; }
+                if (max === min) { max = min + 1; }
+                var pad = 3;
+                ctx.beginPath();
+                ctx.lineWidth = 1.5;
+                ctx.strokeStyle = chart.color;
+                for (var j = 0; j < points.length; j++) {
+                    var x = pad + (w - 2 * pad) * (points.length === 1 ? 0 : j / (points.length - 1));
+                    var y = h - pad - (h - 2 * pad) * ((points[j].value - min) / (max - min));
+                    if (j === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+                }
+                ctx.stroke();
+            }
+
             function createChart(id, color) {
-                var ctx = document.getElementById(id).getContext('2d');
+                var el = document.getElementById(id);
+                if (INLINE) { return { canvas: el, color: color }; }
+                var ctx = el.getContext('2d');
                 var config = JSON.parse(JSON.stringify(chartConfig));
                 return new Chart(ctx, { type: 'line', data: { datasets: [{ data: [], borderColor: color, fill: false }] }, options: config });
             }
@@ -351,6 +407,7 @@ export function generateDashboard({ hostname, uptime, socketPath, title }: Dashb
             };
 
             function updateChart(chart, points) {
+                if (INLINE) { drawSpark(chart, points); return; }
                 chart.data.datasets[0].data = points.map(function(p) { return { x: new Date(p.timestamp), y: p.value }; });
                 chart.update('none');
             }
@@ -363,13 +420,32 @@ export function generateDashboard({ hostname, uptime, socketPath, title }: Dashb
 
             function sumCodes(codes, prefix) { var sum=0; for(var c in codes) if(c.startsWith(prefix)) sum+=codes[c]; return sum; }
 
+            // Escape untrusted values (route paths, methods) before inserting as HTML.
+            function esc(v) {
+                return String(v == null ? '' : v)
+                    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+                    .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+            }
+
             function renderRoutes(containerId, routes, statKey, isSlow) {
                 var container = document.getElementById(containerId);
+                if (!container) return;
                 if (!routes || routes.length === 0) { container.innerHTML = '<div class="route-item"><span class="route-path">No data yet</span></div>'; return; }
                 container.innerHTML = routes.slice(0,5).map(function(r) {
                     var val = statKey === 'avgTime' ? r.avgTime.toFixed(1) + 'ms' : (statKey === 'errors' ? r.errors : r.count);
                     var cls = isSlow && r.avgTime > 100 ? 'slow' : (statKey === 'errors' ? 'error' : '');
-                    return '<div class="route-item"><span class="route-path">' + r.method + ' ' + r.path + '</span><span class="route-stat ' + cls + '">' + val + '</span></div>';
+                    return '<div class="route-item"><span class="route-path">' + esc(r.method) + ' ' + esc(r.path) + '</span><span class="route-stat ' + cls + '">' + esc(val) + '</span></div>';
+                }).join('');
+            }
+
+            function renderWorkers(workers) {
+                var container = document.getElementById('workers');
+                var section = document.getElementById('workersSection');
+                if (!container || !section) return;
+                if (!workers || workers.length === 0) { section.style.display = 'none'; return; }
+                section.style.display = '';
+                container.innerHTML = workers.map(function(w) {
+                    return '<div class="process-item"><div class="label">PID ' + esc(w.pid) + '</div><div class="value">' + w.rps.toFixed(1) + ' rps · ' + w.cpu.toFixed(0) + '% · ' + w.responseTime.toFixed(0) + 'ms</div></div>';
                 }).join('');
             }
 
@@ -377,7 +453,7 @@ export function generateDashboard({ hostname, uptime, socketPath, title }: Dashb
                 var panel = document.getElementById('errorsPanel');
                 if (!errors || errors.length === 0) { panel.innerHTML = '<div style="color:var(--text-muted);font-size:12px;">No errors recorded</div>'; return; }
                 panel.innerHTML = errors.slice(0,5).map(function(e) {
-                    return '<div class="error-item"><div class="error-time">' + new Date(e.timestamp).toLocaleTimeString() + '</div><div class="error-path">' + e.method + ' ' + e.path + ' → ' + e.status + '</div></div>';
+                    return '<div class="error-item"><div class="error-time">' + esc(new Date(e.timestamp).toLocaleTimeString()) + '</div><div class="error-path">' + esc(e.method) + ' ' + esc(e.path) + ' → ' + esc(e.status) + '</div></div>';
                 }).join('');
             }
 
@@ -423,6 +499,8 @@ export function generateDashboard({ hostname, uptime, socketPath, title }: Dashb
 
                         renderRoutes('topRoutes', s.topRoutes, 'count', false);
                         renderRoutes('slowRoutes', s.slowestRoutes, 'avgTime', true);
+                        renderRoutes('errRoutes', s.errorRoutes, 'errors', false);
+                        renderWorkers(s.workers);
 
                         document.getElementById('s2xx').textContent = sumCodes(s.statusCodes, '2');
                         document.getElementById('s3xx').textContent = sumCodes(s.statusCodes, '3');
@@ -452,8 +530,8 @@ export function generateDashboard({ hostname, uptime, socketPath, title }: Dashb
             // Initial fetch
             fetchMetrics();
 
-            // Poll every second
-            setInterval(fetchMetrics, 1000);
+            // Poll at the configured interval
+            setInterval(fetchMetrics, ${pollingInterval});
         })();
     </script>
 </body>
@@ -469,22 +547,39 @@ export interface EdgeDashboardProps {
     uptime: string;
     title: string;
     pollingInterval?: number;
+    chartjsUrl?: string;
+    chartAdapterUrl?: string;
+    inlineCharts?: boolean;
 }
 
 /**
  * Generate the edge-compatible status dashboard HTML
  * Uses polling instead of WebSocket, only shows available metrics
  */
-export function generateEdgeDashboard({ hostname, uptime, title, pollingInterval = 5000 }: EdgeDashboardProps): string {
+export function generateEdgeDashboard({
+    hostname,
+    uptime,
+    title,
+    pollingInterval = 5000,
+    chartjsUrl = DEFAULT_CHARTJS_URL,
+    chartAdapterUrl = DEFAULT_ADAPTER_URL,
+    inlineCharts = false
+}: EdgeDashboardProps): string {
     const pollingSeconds = Math.round(pollingInterval / 1000);
+    const safeTitle = escapeHtml(title);
+    const safeHostname = escapeHtml(hostname);
+    const safeUptime = escapeHtml(uptime);
+    const chartScripts = inlineCharts
+        ? ''
+        : `<script src="${escapeHtml(chartjsUrl)}"></script>
+    <script src="${escapeHtml(chartAdapterUrl)}"></script>`;
     return `<!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>${title}</title>
-    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
-    <script src="https://cdn.jsdelivr.net/npm/chartjs-adapter-date-fns@3.0.0/dist/chartjs-adapter-date-fns.bundle.min.js"></script>
+    <title>${safeTitle}</title>
+    ${chartScripts}
     <style>
         :root {
             --bg: #fff;
@@ -671,8 +766,8 @@ export function generateEdgeDashboard({ hostname, uptime, title, pollingInterval
     <div class="container">
         <header>
             <div class="title-section">
-                <h1>${title}</h1>
-                <div class="subtitle">${hostname}</div>
+                <h1>${safeTitle}</h1>
+                <div class="subtitle">${safeHostname}</div>
             </div>
             <div class="header-controls">
                 <button class="theme-toggle" onclick="toggleTheme()" title="Toggle dark mode">🌓</button>
@@ -689,7 +784,7 @@ export function generateEdgeDashboard({ hostname, uptime, title, pollingInterval
         </div>
 
         <div class="stats-bar">
-            <div class="stat-box"><div class="label">Uptime</div><div class="value" id="uptime">${uptime}</div></div>
+            <div class="stat-box"><div class="label">Uptime</div><div class="value" id="uptime">${safeUptime}</div></div>
             <div class="stat-box"><div class="label">Requests</div><div class="value" id="totalReq">0</div></div>
             <div class="stat-box"><div class="label">Active</div><div class="value" id="activeConn">0</div></div>
             <div class="stat-box"><div class="label">Error Rate</div><div class="value" id="errorRate">0%</div></div>
@@ -724,6 +819,10 @@ export function generateEdgeDashboard({ hostname, uptime, title, pollingInterval
             <div class="route-section">
                 <h3>🐢 Slowest Routes</h3>
                 <div id="slowRoutes"><div class="route-item"><span class="route-path">No data yet</span></div></div>
+            </div>
+            <div class="route-section">
+                <h3>💥 Error Routes</h3>
+                <div id="errRoutes"><div class="route-item"><span class="route-path">No data yet</span></div></div>
             </div>
         </div>
 
@@ -764,8 +863,39 @@ export function generateEdgeDashboard({ hostname, uptime, title, pollingInterval
                 elements: { point: { radius: 0 }, line: { tension: 0.2, borderWidth: 1.5 } }
             };
 
+            // Dependency-free inline renderer (no Chart.js / no CDN) when INLINE is true.
+            var INLINE = ${inlineCharts ? 'true' : 'false'};
+
+            function drawSpark(chart, points) {
+                var canvas = chart.canvas;
+                if (!canvas) return;
+                var w = canvas.clientWidth || 200, h = canvas.clientHeight || 50;
+                var dpr = window.devicePixelRatio || 1;
+                canvas.width = Math.max(1, Math.round(w * dpr));
+                canvas.height = Math.max(1, Math.round(h * dpr));
+                var ctx = canvas.getContext('2d');
+                ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+                ctx.clearRect(0, 0, w, h);
+                if (!points || points.length === 0) return;
+                var min = Infinity, max = -Infinity;
+                for (var i = 0; i < points.length; i++) { var v = points[i].value; if (v < min) min = v; if (v > max) max = v; }
+                if (max === min) { max = min + 1; }
+                var pad = 3;
+                ctx.beginPath();
+                ctx.lineWidth = 1.5;
+                ctx.strokeStyle = chart.color;
+                for (var j = 0; j < points.length; j++) {
+                    var x = pad + (w - 2 * pad) * (points.length === 1 ? 0 : j / (points.length - 1));
+                    var y = h - pad - (h - 2 * pad) * ((points[j].value - min) / (max - min));
+                    if (j === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+                }
+                ctx.stroke();
+            }
+
             function createChart(id, color) {
-                var ctx = document.getElementById(id).getContext('2d');
+                var el = document.getElementById(id);
+                if (INLINE) { return { canvas: el, color: color }; }
+                var ctx = el.getContext('2d');
                 var config = JSON.parse(JSON.stringify(chartConfig));
                 return new Chart(ctx, { type: 'line', data: { datasets: [{ data: [], borderColor: color, fill: false }] }, options: config });
             }
@@ -777,6 +907,7 @@ export function generateEdgeDashboard({ hostname, uptime, title, pollingInterval
             };
 
             function updateChart(chart, points) {
+                if (INLINE) { drawSpark(chart, points); return; }
                 chart.data.datasets[0].data = points.map(function(p) { return { x: new Date(p.timestamp), y: p.value }; });
                 chart.update('none');
             }
@@ -789,13 +920,21 @@ export function generateEdgeDashboard({ hostname, uptime, title, pollingInterval
 
             function sumCodes(codes, prefix) { var sum=0; for(var c in codes) if(c.startsWith(prefix)) sum+=codes[c]; return sum; }
 
+            // Escape untrusted values (route paths, methods) before inserting as HTML.
+            function esc(v) {
+                return String(v == null ? '' : v)
+                    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+                    .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+            }
+
             function renderRoutes(containerId, routes, statKey, isSlow) {
                 var container = document.getElementById(containerId);
+                if (!container) return;
                 if (!routes || routes.length === 0) { container.innerHTML = '<div class="route-item"><span class="route-path">No data yet</span></div>'; return; }
                 container.innerHTML = routes.slice(0,5).map(function(r) {
                     var val = statKey === 'avgTime' ? r.avgTime.toFixed(1) + 'ms' : (statKey === 'errors' ? r.errors : r.count);
                     var cls = isSlow && r.avgTime > 100 ? 'slow' : (statKey === 'errors' ? 'error' : '');
-                    return '<div class="route-item"><span class="route-path">' + r.method + ' ' + r.path + '</span><span class="route-stat ' + cls + '">' + val + '</span></div>';
+                    return '<div class="route-item"><span class="route-path">' + esc(r.method) + ' ' + esc(r.path) + '</span><span class="route-stat ' + cls + '">' + esc(val) + '</span></div>';
                 }).join('');
             }
 
@@ -803,7 +942,7 @@ export function generateEdgeDashboard({ hostname, uptime, title, pollingInterval
                 var panel = document.getElementById('errorsPanel');
                 if (!errors || errors.length === 0) { panel.innerHTML = '<div style="color:var(--text-muted);font-size:12px;">No errors recorded</div>'; return; }
                 panel.innerHTML = errors.slice(0,5).map(function(e) {
-                    return '<div class="error-item"><div class="error-time">' + new Date(e.timestamp).toLocaleTimeString() + '</div><div class="error-path">' + e.method + ' ' + e.path + ' → ' + e.status + '</div></div>';
+                    return '<div class="error-item"><div class="error-time">' + esc(new Date(e.timestamp).toLocaleTimeString()) + '</div><div class="error-path">' + esc(e.method) + ' ' + esc(e.path) + ' → ' + esc(e.status) + '</div></div>';
                 }).join('');
             }
 
@@ -839,6 +978,7 @@ export function generateEdgeDashboard({ hostname, uptime, title, pollingInterval
 
                         renderRoutes('topRoutes', s.topRoutes, 'count', false);
                         renderRoutes('slowRoutes', s.slowestRoutes, 'avgTime', true);
+                        renderRoutes('errRoutes', s.errorRoutes, 'errors', false);
 
                         document.getElementById('s2xx').textContent = sumCodes(s.statusCodes, '2');
                         document.getElementById('s3xx').textContent = sumCodes(s.statusCodes, '3');
