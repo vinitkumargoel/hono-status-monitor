@@ -207,11 +207,23 @@ export function clientScript(inlineCharts: boolean, pollingInterval: number): st
             var INLINE = ${inlineCharts ? 'true' : 'false'};
 
             // This script is shared by the Node and edge dashboards, which render
-            // different subsets of cards. Every DOM lookup is therefore optional:
-            // helpers no-op when the element is absent instead of throwing.
+            // different subsets of cards AND report different subsets of metrics.
+            // Both are therefore optional: helpers no-op when the element is
+            // absent, and render an em dash when the value is missing, rather
+            // than throwing. A throw here would be caught by the fetch handler
+            // and silently freeze every card on the page.
             function setText(id, value) {
                 var el = document.getElementById(id);
                 if (el) el.textContent = value;
+            }
+
+            // Numeric setter: tolerates a field the running platform doesn't report.
+            function setNum(id, value, digits, suffix) {
+                var el = document.getElementById(id);
+                if (!el) return;
+                el.textContent = (typeof value === 'number' && isFinite(value))
+                    ? value.toFixed(digits) + (suffix || '')
+                    : '\\u2014';
             }
 
             function setDanger(id, active) {
@@ -274,12 +286,18 @@ export function clientScript(inlineCharts: boolean, pollingInterval: number): st
             }
 
             function formatUptime(s) {
+                if (typeof s !== 'number' || !isFinite(s)) return '\\u2014';
                 var d=Math.floor(s/86400), h=Math.floor((s%86400)/3600), m=Math.floor((s%3600)/60), parts=[];
                 if(d)parts.push(d+'d'); if(h)parts.push(h+'h'); if(m)parts.push(m+'m'); parts.push((s%60)+'s');
                 return parts.join(' ');
             }
 
             function sumCodes(codes, prefix) { var sum=0; for(var c in codes) if(c.startsWith(prefix)) sum+=codes[c]; return sum; }
+
+            // Format a number for interpolation into markup, tolerating absent fields.
+            function fx(v, digits) {
+                return (typeof v === 'number' && isFinite(v)) ? v.toFixed(digits) : '\\u2014';
+            }
 
             // Escape untrusted values (route paths, methods) before inserting as HTML.
             function esc(v) {
@@ -293,7 +311,7 @@ export function clientScript(inlineCharts: boolean, pollingInterval: number): st
                 if (!container) return;
                 if (!routes || routes.length === 0) { container.innerHTML = '<div class="route-item"><span class="route-path">No data yet</span></div>'; return; }
                 container.innerHTML = routes.slice(0,5).map(function(r) {
-                    var val = statKey === 'avgTime' ? r.avgTime.toFixed(1) + 'ms' : (statKey === 'errors' ? r.errors : r.count);
+                    var val = statKey === 'avgTime' ? fx(r.avgTime, 1) + 'ms' : (statKey === 'errors' ? r.errors : r.count);
                     var cls = isSlow && r.avgTime > 100 ? 'slow' : (statKey === 'errors' ? 'error' : '');
                     return '<div class="route-item"><span class="route-path">' + esc(r.method) + ' ' + esc(r.path) + '</span><span class="route-stat ' + cls + '">' + esc(val) + '</span></div>';
                 }).join('');
@@ -306,7 +324,7 @@ export function clientScript(inlineCharts: boolean, pollingInterval: number): st
                 if (!workers || workers.length === 0) { section.style.display = 'none'; return; }
                 section.style.display = '';
                 container.innerHTML = workers.map(function(w) {
-                    return '<div class="process-item"><div class="label">PID ' + esc(w.pid) + '</div><div class="value">' + w.rps.toFixed(1) + ' rps · ' + w.cpu.toFixed(0) + '% · ' + w.responseTime.toFixed(0) + 'ms</div></div>';
+                    return '<div class="process-item"><div class="label">PID ' + esc(w.pid) + '</div><div class="value">' + fx(w.rps, 1) + ' rps · ' + fx(w.cpu, 0) + '% · ' + fx(w.responseTime, 0) + 'ms</div></div>';
                 }).join('');
             }
 
@@ -331,26 +349,27 @@ export function clientScript(inlineCharts: boolean, pollingInterval: number): st
                 fetch(basePath + 'api/metrics')
                     .then(function(res) { return res.json(); })
                     .then(function(data) {
-                        var s = data.snapshot, c = data.charts;
+                        var s = data.snapshot, c = data.charts || {};
+                        var pct = s.percentiles || {};
 
-                        setText('cpuVal', s.cpu.toFixed(1));
-                        setText('memVal', s.memoryMB.toFixed(0));
-                        setText('heapVal', s.heapUsedMB.toFixed(1));
-                        setText('loadVal', s.loadAvg.toFixed(2));
-                        setText('rtVal', s.responseTime.toFixed(1));
-                        setText('rpsVal', s.rps.toFixed(1));
-                        setText('lagVal', s.eventLoopLag.toFixed(1));
-                        setText('errRateVal', s.errorRate.toFixed(1));
+                        setNum('cpuVal', s.cpu, 1);
+                        setNum('memVal', s.memoryMB, 0);
+                        setNum('heapVal', s.heapUsedMB, 1);
+                        setNum('loadVal', s.loadAvg, 2);
+                        setNum('rtVal', s.responseTime, 1);
+                        setNum('rpsVal', s.rps, 1);
+                        setNum('lagVal', s.eventLoopLag, 1);
+                        setNum('errRateVal', s.errorRate, 1);
 
                         setText('uptime', formatUptime(s.processUptime));
-                        setText('totalReq', s.totalRequests.toLocaleString());
+                        setText('totalReq', typeof s.totalRequests === 'number' ? s.totalRequests.toLocaleString() : '\\u2014');
                         setText('activeConn', s.activeConnections);
-                        setText('errorRate', s.errorRate.toFixed(1) + '%');
+                        setNum('errorRate', s.errorRate, 1, '%');
 
-                        setText('pAvg', s.percentiles.avg.toFixed(1) + 'ms');
-                        setText('p50', s.percentiles.p50.toFixed(1) + 'ms');
-                        setText('p95', s.percentiles.p95.toFixed(1) + 'ms');
-                        setText('p99', s.percentiles.p99.toFixed(1) + 'ms');
+                        setNum('pAvg', pct.avg, 1, 'ms');
+                        setNum('p50', pct.p50, 1, 'ms');
+                        setNum('p95', pct.p95, 1, 'ms');
+                        setNum('p99', pct.p99, 1, 'ms');
 
                         updateChart(charts.cpu, c.cpu);
                         updateChart(charts.mem, c.memory);
@@ -370,19 +389,19 @@ export function clientScript(inlineCharts: boolean, pollingInterval: number): st
                         setText('s3xx', sumCodes(s.statusCodes, '3'));
                         setText('s4xx', sumCodes(s.statusCodes, '4'));
                         setText('s5xx', sumCodes(s.statusCodes, '5'));
-                        setText('rateLimited', s.rateLimitStats.blocked);
+                        setText('rateLimited', s.rateLimitStats ? s.rateLimitStats.blocked : 0);
 
                         renderErrors(s.recentErrors);
-                        applyAlertColors(s.alerts);
+                        applyAlertColors(s.alerts || {});
 
                         if (s.database) {
-                            setText('dbLatency', s.database.latencyMs.toFixed(1) + 'ms');
+                            setNum('dbLatency', s.database.latencyMs, 1, 'ms');
                             setText('dbStatus', s.database.connected ? 'Connected' : 'Disconnected');
                             var dbEl = document.getElementById('dbStatus');
                             if (dbEl) dbEl.className = 'status ' + (s.database.connected ? 'ok' : 'error');
                         }
-                        setText('heapTotal', s.heapTotalMB.toFixed(0));
-                        if (s.gc) setText('heapGrowth', s.gc.heapGrowthRate.toFixed(2));
+                        setNum('heapTotal', s.heapTotalMB, 0);
+                        if (s.gc) setNum('heapGrowth', s.gc.heapGrowthRate, 2);
 
                         setText('nodeVer', s.nodeVersion);
                         setText('platform', String(s.platform).split(' ')[0]);

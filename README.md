@@ -188,6 +188,7 @@ Internals were restructured to cut bundle size; the documented `statusMonitor()`
 - **The dashboard module split** into `dashboard-assets` (shared CSS + client script), `dashboard` (Node) and `dashboard-edge` (edge). `generateDashboard` and `generateEdgeDashboard` are still exported from the package root.
 - **`workerd` / `edge-light` export conditions** mean an edge bundler now resolves the bare specifier to the edge build. That build intentionally omits the Node-only APIs (`createMonitor`, `createClusterAggregator`, `generateDashboard`); referencing them in an edge build is now a build-time error rather than a runtime crash.
 - **Health-check latency on edge** is measured with `performance.now()` and reported to two decimals, matching Node. It was whole milliseconds before.
+- **Route eviction is now genuinely least-recently-used.** At `maxTrackedRoutes`, eviction previously compared a `lastAccess` timestamp with 1 ms granularity; under real traffic several routes share the same millisecond, so it fell back to scan order and could evict the *most* recently used route. It now tracks recency directly. A health check that returns `latencyMs: 0` is also reported as `0` instead of being replaced by the measured time.
 
 ### Notes for 1.0.9 users
 

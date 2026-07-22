@@ -143,19 +143,19 @@ users this work targets. The bytes were incidental.
 
 | Entry | Baseline | Shipped | Δ |
 |---|---:|---:|---:|
-| main, minified | 74,300 | **50,208** | **−32.4%** |
-| main, gzipped | 15,310 | 14,045 | −8.3% |
-| edge, minified | 34,659 | **31,058** | **−10.4%** |
-| edge, gzipped | 10,339 | 10,378 | +0.4% |
+| main, minified | 74,300 | **50,300** | **−32.3%** |
+| main, gzipped | 15,310 | 14,096 | −7.9% |
+| edge, minified | 34,659 | **31,218** | **−9.9%** |
+| edge, gzipped | 10,339 | 10,454 | +1.1% |
 
 With code splitting (Vite, Rollup, `esbuild --splitting`) the dashboard leaves
 the entry chunk entirely:
 
 | Entry chunk | Baseline | Shipped | Δ |
 |---|---:|---:|---:|
-| main | 74,300 | **23,554** | **−68.3%** |
-| edge | 34,659 | **12,900** | **−62.8%** |
-| edge, gzipped | 10,339 | **4,900** | **−52.6%** |
+| main | 74,300 | **23,507** | **−68.4%** |
+| edge | 34,659 | **12,920** | **−62.7%** |
+| edge, gzipped | 10,339 | **4,886** | **−52.7%** |
 
 ### Install size
 
@@ -217,13 +217,28 @@ differential testing against the v1.0.9 build rather than by inspection:
 - **Build self-check** — `minify-assets.mjs` re-renders and re-parses both
   dashboards after minifying and fails the build on a dropped element or syntax
   error. Both failure modes were negative-tested.
-- 55/55 unit tests green throughout.
+- **Real Cloudflare Workers run** — built with Wrangler 4.113 and served under
+  `workerd` via `wrangler dev --local`. `/`, `/status`, `/status/api/metrics`,
+  `/status/health` and `/status/prometheus` all return 200; the dashboard
+  renders (15,412 B), which means the request-time dynamic `import()` resolves
+  inside the real runtime. Wrangler inlines it into a single module rather than
+  emitting a second chunk, so there is no cross-chunk import at runtime on the
+  default path. Zero `node:os` / `node:cluster` / `node:perf_hooks` references
+  in the output.
+- **`workerd` export condition** — importing the *bare* `hono-status-monitor`
+  specifier from a Worker produces a byte-identical bundle to the explicit
+  `/edge` import (178.06 KiB upload, 44.07 KiB gzip, Hono included). The
+  condition resolves as documented.
+- 58/58 unit tests green.
 
 ### Known gap
 
 Unit tests import from `src/`, which is never minified, so the minifier is not
 covered by `npm test`. That is why validation lives inside the build step
 instead — it runs on every `npm run build` and every `prepublishOnly`.
+`tests/dashboard-contract.test.ts` covers the other half: it pins the snapshot
+fields the shared client script reads, on both platforms, so trimming the edge
+payload to save bytes fails a test rather than silently freezing the dashboard.
 
 ---
 

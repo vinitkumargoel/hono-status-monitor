@@ -16,6 +16,9 @@ import type {
 } from './types.js';
 import { round } from './metrics-utils.js';
 
+/** Cap on retained latency samples; percentiles are computed from these. */
+const MAX_RESPONSE_TIME_SAMPLES = 1000;
+
 /**
  * Mutable counters owned by the core. Exposed directly (rather than behind
  * accessors) because both monitors read these on every snapshot and the
@@ -99,18 +102,26 @@ export function createStatsCore(
         return round((totalErrors / state.totalRequests) * 100);
     }
 
-    /** Cap distinct tracked routes; evict least-recently-accessed to bound memory. */
+    /**
+     * Cap distinct tracked routes; evict least-recently-used to bound memory.
+     *
+     * A Map iterates in insertion order and `touchRoute` re-inserts on access,
+     * so the first key is always the least recently used. That makes eviction
+     * O(1) rather than a scan of every tracked route — which mattered because
+     * eviction runs on every *new* route once at the cap, and a flood of
+     * distinct paths is exactly the case the cap exists to survive.
+     */
     function evictRoutesIfNeeded(): void {
         if (state.routeStats.size < config.maxTrackedRoutes) return;
-        let oldestKey: string | null = null;
-        let oldestAccess = Infinity;
-        for (const [k, v] of state.routeStats) {
-            if (v.lastAccess < oldestAccess) {
-                oldestAccess = v.lastAccess;
-                oldestKey = k;
-            }
-        }
-        if (oldestKey) state.routeStats.delete(oldestKey);
+        const oldest = state.routeStats.keys().next().value;
+        if (oldest !== undefined) state.routeStats.delete(oldest);
+    }
+
+    /** Move a route to the most-recently-used end of the iteration order. */
+    function touchRoute(key: string, stats: RouteStats): void {
+        stats.lastAccess = Date.now();
+        state.routeStats.delete(key);
+        state.routeStats.set(key, stats);
     }
 
     /** Append a data point and drop anything older than the retention window. */
@@ -160,7 +171,13 @@ export function createStatsCore(
 
         state.totalResponseTime += durationMs;
         state.responseTimeCount++;
+
+        // Bounded here rather than in the callers: the core owns this array, so
+        // the cap has to travel with it. Halving on overflow amortises the copy.
         state.responseTimeSamples.push(durationMs);
+        if (state.responseTimeSamples.length > MAX_RESPONSE_TIME_SAMPLES) {
+            state.responseTimeSamples = state.responseTimeSamples.slice(-MAX_RESPONSE_TIME_SAMPLES / 2);
+        }
 
         const codeStr = statusCode.toString();
         state.statusCodes[codeStr] = (state.statusCodes[codeStr] || 0) + 1;
@@ -175,7 +192,7 @@ export function createStatsCore(
             stats.avgTime = stats.totalTime / stats.count;
             stats.minTime = Math.min(stats.minTime, durationMs);
             stats.maxTime = Math.max(stats.maxTime, durationMs);
-            stats.lastAccess = Date.now();
+            touchRoute(key, stats);
 
             if (statusCode >= 400) {
                 stats.errors++;
@@ -217,7 +234,9 @@ export function createStatsCore(
                     return {
                         name: r.name || name,
                         connected: r.connected,
-                        latencyMs: r.latencyMs || round(performance.now() - start),
+                        // `??` not `||`: a check legitimately reporting 0 ms must
+                        // not be overwritten with our own measurement.
+                        latencyMs: r.latencyMs ?? round(performance.now() - start),
                         details: r.details
                     };
                 } catch (err) {

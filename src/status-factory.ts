@@ -38,8 +38,11 @@ export interface AssembleOptions<M extends AssemblableMonitor> {
     enableStream: boolean;
     /** Reported on the returned handle and used by consumers to branch. */
     isEdgeMode: boolean;
-    /** Backwards-compatible socket initializer. */
-    initSocket: (server?: any) => unknown;
+    /**
+     * Backwards-compatible socket initializer. The argument is accepted and
+     * ignored — kept so existing `monitor.initSocket(server)` calls still type.
+     */
+    initSocket: (server?: unknown) => unknown;
 }
 
 /**
@@ -76,7 +79,8 @@ export function assembleStatusMonitor<M extends AssemblableMonitor>(
     // /health, /prometheus and (optionally) /api/stream
     registerCommonRoutes(routes, monitor, { enableStream: options.enableStream });
 
-    // Start metrics collection
+    // Start metrics collection. Note this is a construction-time side effect: on
+    // Node it registers an interval that keeps the process alive until stop().
     monitor.start();
 
     return {

@@ -399,10 +399,6 @@ export function createMonitor(userConfig: StatusMonitorConfig = {}) {
         state.totalResponseTime = 0;
         state.responseTimeCount = 0;
 
-        if (state.responseTimeSamples.length > 1000) {
-            state.responseTimeSamples = state.responseTimeSamples.slice(-500);
-        }
-
         // In cluster mode, send metrics to master for aggregation
         if (config.clusterMode && process.send) {
             const dbStats = await getDatabaseStats();

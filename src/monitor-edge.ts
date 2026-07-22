@@ -177,11 +177,6 @@ export function createEdgeMonitor(userConfig: StatusMonitorConfig = {}) {
             // Reset counters
             state.totalResponseTime = 0;
             state.responseTimeCount = 0;
-
-            // Trim samples (keep last 1000)
-            if (state.responseTimeSamples.length > 1000) {
-                state.responseTimeSamples = state.responseTimeSamples.slice(-500);
-            }
         }
     }
 
