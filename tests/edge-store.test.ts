@@ -151,7 +151,7 @@ describe('edge monitor with store', () => {
 
 describe('inline charts', () => {
     it('omits CDN scripts and includes the inline renderer', async () => {
-        const { generateEdgeDashboard } = await import('../src/dashboard');
+        const { generateEdgeDashboard } = await import('../src/dashboard-edge');
         const html = generateEdgeDashboard({ hostname: 'h', uptime: '1s', title: 't', inlineCharts: true });
         expect(html).not.toContain('cdn.jsdelivr.net');
         expect(html).toContain('function drawSpark(');
