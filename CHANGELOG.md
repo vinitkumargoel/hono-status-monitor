@@ -26,6 +26,7 @@ Secure defaults, fail-fast config, custom metrics and an OpenTelemetry bridge. *
 - **Custom metrics:** `monitor.counter(name, help?)` (`.inc(labels?, value = 1)`) and `monitor.gauge(name, help?)` (`.set(value, labels?)`, `.inc(labels?, value)`). Exported on `/prometheus` as `<prometheusPrefix>_<name>` and under `custom` in `/api/metrics` when any are registered. Per instance; names and labels are validated; at most 200 label combinations per metric (warns once).
 - **OpenTelemetry bridge:** `registerOtelMetrics(meter, monitor, options)` from `hono-status-monitor/otel`, with no `@opentelemetry/*` dependency. See [docs/opentelemetry.md](./docs/opentelemetry.md).
 - **Durable Object store:** `durableObjectStore(namespace)` and `StatusStoreObject` from `hono-status-monitor/durable-object`, a strongly consistent `store` for edge fleet aggregation. See [docs/durable-object-store.md](./docs/durable-object-store.md).
+- `StatusStore` gained an optional `entries({ prefix })` returning keys with values. When a store implements it (the Durable Object store does), peers load in one call instead of `list` plus one `get` per peer.
 - `handle.start()`, `isDenoEnvironment()`, and JSDoc on the `StatusMonitor` handle.
 
 ### Changed

@@ -47,6 +47,8 @@ export interface DurableObjectNamespaceLike {
 export const DO_STORE_MAX_KEY_LENGTH = 512;
 /** Largest accepted value, in UTF-8 bytes. */
 export const DO_STORE_MAX_VALUE_BYTES = 128 * 1024;
+/** Longest accepted TTL (30 days); snapshots are rewritten every storeWriteInterval anyway. */
+export const DO_STORE_MAX_TTL_SECONDS = 30 * 24 * 60 * 60;
 /** Largest accepted request body, in characters (value plus JSON overhead). */
 const MAX_BODY_CHARS = DO_STORE_MAX_VALUE_BYTES * 2 + 4096;
 /** Internal storage-key prefix, so the purge only ever touches our entries. */
@@ -61,7 +63,7 @@ interface Entry {
 type RpcRequest =
     | { op: 'get'; key: string }
     | { op: 'put'; key: string; value: string; ttlSeconds?: number }
-    | { op: 'list'; prefix?: string };
+    | { op: 'list'; prefix?: string; withValues?: boolean };
 
 function json(body: unknown, status = 200): Response {
     return new Response(JSON.stringify(body), {
@@ -103,8 +105,8 @@ function parseRpc(body: unknown): RpcRequest | string {
                 return `value exceeds ${DO_STORE_MAX_VALUE_BYTES} bytes`;
             }
             const ttl = b.ttlSeconds;
-            if (ttl !== undefined && (typeof ttl !== 'number' || !Number.isFinite(ttl) || ttl <= 0)) {
-                return 'ttlSeconds must be a positive number';
+            if (ttl !== undefined && (typeof ttl !== 'number' || !Number.isFinite(ttl) || ttl <= 0 || ttl > DO_STORE_MAX_TTL_SECONDS)) {
+                return `ttlSeconds must be a positive number of at most ${DO_STORE_MAX_TTL_SECONDS}`;
             }
             return { op: 'put', key: b.key, value: b.value, ttlSeconds: ttl };
         }
@@ -112,7 +114,8 @@ function parseRpc(body: unknown): RpcRequest | string {
             if (b.prefix !== undefined && (typeof b.prefix !== 'string' || b.prefix.length > DO_STORE_MAX_KEY_LENGTH)) {
                 return `prefix must be a string of at most ${DO_STORE_MAX_KEY_LENGTH} chars`;
             }
-            return { op: 'list', prefix: b.prefix };
+            if (b.withValues !== undefined && typeof b.withValues !== 'boolean') return 'withValues must be a boolean';
+            return { op: 'list', prefix: b.prefix, withValues: b.withValues };
         default:
             return 'op must be one of get, put, list';
     }
@@ -160,8 +163,10 @@ export class StatusStoreObject {
                 case 'put':
                     await this.put(rpc.key, rpc.value, rpc.ttlSeconds);
                     return json({ ok: true });
-                case 'list':
-                    return json({ keys: await this.list(rpc.prefix ?? '') });
+                case 'list': {
+                    const entries = await this.list(rpc.prefix ?? '');
+                    return json(rpc.withValues ? { entries } : { keys: entries.map(({ name }) => ({ name })) });
+                }
             }
         } catch {
             return json({ error: 'storage error' }, 500);
@@ -205,16 +210,17 @@ export class StatusStoreObject {
         if (expiresAt !== null) await this.scheduleAlarm(expiresAt);
     }
 
-    private async list(prefix: string): Promise<{ name: string }[]> {
+    /** Live entries under `prefix`. Storage returns values with the keys, so they come along for free. */
+    private async list(prefix: string): Promise<{ name: string; value: string }[]> {
         const now = Date.now();
         const entries = await this.storage.list({ prefix: ENTRY_PREFIX + prefix });
-        const keys: { name: string }[] = [];
+        const keys: { name: string; value: string }[] = [];
         const expired: string[] = [];
         for (const [storageKey, entry] of entries) {
             if (!isEntry(entry) || isExpired(entry, now)) {
                 expired.push(storageKey);
             } else {
-                keys.push({ name: storageKey.slice(ENTRY_PREFIX.length) });
+                keys.push({ name: storageKey.slice(ENTRY_PREFIX.length), value: entry.v });
             }
         }
         await this.deleteKeys(expired);
@@ -281,6 +287,16 @@ export function durableObjectStore(namespace: DurableObjectNamespaceLike, name =
                     .filter((k): k is { name: string } => !!k && typeof (k as { name?: unknown }).name === 'string')
                     .map((k) => ({ name: k.name }))
             };
+        },
+        // One round trip for the whole peer set instead of list + one get per peer.
+        async entries(options) {
+            const res = (await call(namespace, name, { op: 'list', prefix: options?.prefix, withValues: true })) as {
+                entries?: unknown;
+            } | null;
+            const entries = res?.entries;
+            if (!Array.isArray(entries)) throw new Error('StatusStoreObject returned a malformed listing');
+            return entries.filter((e): e is { name: string; value: string } =>
+                !!e && typeof (e as { name?: unknown }).name === 'string' && typeof (e as { value?: unknown }).value === 'string');
         }
     };
 }

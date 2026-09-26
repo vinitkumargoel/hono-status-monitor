@@ -215,6 +215,7 @@ describe('StatusStoreObject validation', () => {
         ['value too large', { op: 'put', key: 'a', value: 'x'.repeat(DO_STORE_MAX_VALUE_BYTES + 1) }],
         ['multi-byte value too large', { op: 'put', key: 'a', value: 'é'.repeat(DO_STORE_MAX_VALUE_BYTES / 2 + 1) }],
         ['negative ttl', { op: 'put', key: 'a', value: 'v', ttlSeconds: -1 }],
+        ['ttl over 30 days', { op: 'put', key: 'a', value: 'v', ttlSeconds: 31 * 24 * 3600 }],
         ['string ttl', { op: 'put', key: 'a', value: 'v', ttlSeconds: '60' }],
         ['non-string prefix', { op: 'list', prefix: 1 }],
         ['prefix too long', { op: 'list', prefix: 'p'.repeat(DO_STORE_MAX_KEY_LENGTH + 1) }]
@@ -269,6 +270,29 @@ describe('edge-store over the Durable Object store', () => {
         expect(peers.map((p) => p.totalRequests).sort((a, b) => a - b)).toEqual([10, 20]);
         // maxPeers caps reads: the sorted listing is junk, peer-1, peer-2 (self excluded).
         expect((await loadPeerSnapshots(store, 'self', 2)).map((p) => p.totalRequests)).toEqual([10]);
+    });
+
+    it('loads all peers in a single round trip', async () => {
+        const { ns } = fakeNamespace();
+        const store = durableObjectStore(ns);
+        for (const id of ['self', 'p1', 'p2', 'p3']) await persistSnapshot(store, id, snap({ totalRequests: 1 }), 120);
+        const calls: string[] = [];
+        const counting = {
+            idFromName: ns.idFromName.bind(ns),
+            get: (id: unknown) => {
+                const stub = ns.get(id as never);
+                return { fetch: (url: string, init?: RequestInit) => { calls.push(String(init?.body)); return stub.fetch(url, init as never); } };
+            }
+        };
+        const peers = await loadPeerSnapshots(durableObjectStore(counting as never), 'self');
+        expect(peers).toHaveLength(3);
+        expect(calls).toHaveLength(1);
+        expect(JSON.parse(calls[0])).toMatchObject({ op: 'list', withValues: true });
+    });
+
+    it('rejects a non-boolean withValues', async () => {
+        const obj = new StatusStoreObject({ storage: fakeStorage() }, {});
+        expect((await rpc(obj, { op: 'list', withValues: 'yes' })).status).toBe(400);
     });
 
     it('persisted snapshots expire after the TTL', async () => {

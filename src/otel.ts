@@ -113,6 +113,19 @@ export function registerOtelMetrics(
 
     const observables: ObservableLike[] = [...Object.values(http), ...(system ? Object.values(system) : [])];
 
+    // Observable counters must never decrease, but the snapshot's totals do:
+    // resetStats() zeroes them, and an edge fleet total drops when a peer
+    // expires. Treat a drop as a reset (the new value counted up from zero,
+    // as Prometheus does) and carry the old total as an offset.
+    const cumulative = new Map<string, { last: number; offset: number }>();
+    const monotonic = (key: string, value: number): number => {
+        const entry = cumulative.get(key) ?? { last: 0, offset: 0 };
+        if (value < entry.last) entry.offset += entry.last;
+        entry.last = value;
+        cumulative.set(key, entry);
+        return value + entry.offset;
+    };
+
     const callback: BatchObservableCallbackLike = async (result) => {
         let s: MetricsSnapshot;
         try {
@@ -129,13 +142,13 @@ export function registerOtelMetrics(
         observe(http.responseTime, s.responseTime);
         observe(http.errorRate, s.errorRate);
         observe(http.active, s.activeConnections);
-        observe(http.requests, s.totalRequests);
+        if (Number.isFinite(s.totalRequests)) observe(http.requests, monotonic('requests', s.totalRequests));
         const percentiles = s.percentiles;
         if (percentiles) {
             for (const [quantile, key] of QUANTILES) observe(http.latency, percentiles[key], { quantile });
         }
         for (const [status, count] of Object.entries(s.statusCodes ?? {})) {
-            observe(http.responses, count, { status });
+            if (Number.isFinite(count)) observe(http.responses, monotonic(`status:${status}`, count), { status });
         }
 
         if (system) {

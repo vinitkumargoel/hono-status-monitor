@@ -214,4 +214,4 @@ It exports the same `statusMonitor` factory and types, minus the Node-only APIs 
 
 Invalid options no longer produce a warning: they throw; see [StatusMonitorConfigError at startup](#statusmonitorconfigerror-at-startup).
 
-To route these messages elsewhere, pass `logger` (any object with `log`, `warn` and `error`). `logger: false` silences the monitor entirely, including these warnings.
+To route these messages elsewhere, pass `logger` (any object with `warn` and `error`, such as a pino or winston instance). `logger: false` silences the monitor entirely, including these warnings.

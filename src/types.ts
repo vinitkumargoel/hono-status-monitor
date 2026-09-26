@@ -162,9 +162,14 @@ export interface HealthCheckDefinition {
     timeoutMs?: number;
 }
 
-/** The subset of `console` the monitor writes through. */
+/**
+ * What the monitor writes through: `console`, pino, winston and most other
+ * loggers fit. `warn` and `error` are required; informational messages go to
+ * `log`, else `info`, else nowhere.
+ */
 export interface StatusLogger {
-    log(...args: unknown[]): void;
+    log?(...args: unknown[]): void;
+    info?(...args: unknown[]): void;
     warn(...args: unknown[]): void;
     error(...args: unknown[]): void;
 }
@@ -177,6 +182,12 @@ export interface StatusStore {
     get(key: string): Promise<string | null>;
     put(key: string, value: string, options?: { expirationTtl?: number }): Promise<void>;
     list(options?: { prefix?: string }): Promise<{ keys: { name: string }[] }>;
+    /**
+     * Optional: keys and values under a prefix in one call. When present the
+     * monitor uses it to load peers instead of `list` plus one `get` per peer
+     * (the Durable Object store implements it).
+     */
+    entries?(options?: { prefix?: string }): Promise<{ name: string; value: string }[]>;
 }
 
 /**
@@ -454,8 +465,10 @@ export interface DashboardProps {
  *
  * @typeParam M - The underlying monitor (`Monitor` on Node/Bun/Deno,
  *   `EdgeMonitor` on edge runtimes).
+ * @typeParam E - Literal type of `isEdgeMode`, so that checking it narrows
+ *   `monitor` when the handle is a union (as the main entry returns).
  */
-export interface StatusMonitor<M = unknown> {
+export interface StatusMonitor<M = unknown, E extends boolean = boolean> {
     /** Hono middleware that records every request it sees (except the status routes). */
     middleware: MiddlewareHandler;
     /** Dashboard, `/api/metrics`, `/api/stream`, `/health` and `/prometheus`; mount at `config.path`. */
@@ -492,6 +505,6 @@ export interface StatusMonitor<M = unknown> {
     gauge(name: string, help?: string): GaugeMetric;
     /** The underlying monitor instance. */
     monitor: M;
-    /** Whether the request-only edge monitor is in use. */
-    isEdgeMode: boolean;
+    /** Whether the request-only edge monitor is in use. Narrows `monitor`. */
+    isEdgeMode: E;
 }

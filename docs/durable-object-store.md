@@ -96,3 +96,7 @@ durableObjectStore(namespace, name = 'hono-status-monitor')
 - Entries store their expiry time. Expired entries are dropped when a `get` or `list` touches them, and an alarm clears the rest, so a stopped isolate's snapshot disappears on its own.
 - Limits: keys and prefixes are at most 512 characters, and values at most 128 KB (UTF-8). A request that breaks them gets a `400`, and the client call rejects. The monitor treats store errors as best-effort and never fails a request because of one.
 - The object talks over a small JSON RPC (`POST`, body `{ op: 'get' | 'put' | 'list', key?, value?, ttlSeconds?, prefix? }`). It isn't meant to be exposed to the internet. Only your Worker, through the binding, can reach it.
+
+## Security
+
+The object trusts whoever can call its `fetch()`. Inside your Worker that is only code holding the `STATUS_STORE` binding, which is what you want. Never forward an incoming request (or a client-chosen path or body) to the stub: anyone who can reach such a route could read and overwrite every stored snapshot. TTLs above 30 days, keys over 512 characters and values over 128 KB are rejected with a 400.

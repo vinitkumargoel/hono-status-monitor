@@ -82,7 +82,9 @@ export type { CounterMetric, GaugeMetric, MetricLabels, CustomMetricSeries } fro
  * export default app;
  * ```
  */
-export function statusMonitor(config: StatusMonitorConfig = {}): StatusMonitor<Monitor | EdgeMonitor> {
+export function statusMonitor(
+    config: StatusMonitorConfig = {}
+): StatusMonitor<Monitor, false> | StatusMonitor<EdgeMonitor, true> {
     const platform = detectPlatform();
     return platform === 'node' || platform === 'bun' || platform === 'deno'
         ? createNodeStatusMonitor(config)
@@ -93,7 +95,7 @@ export function statusMonitor(config: StatusMonitorConfig = {}): StatusMonitor<M
  * Create a Node.js status monitor with full features
  * Requires Node.js runtime with os, process, http modules
  */
-function createNodeStatusMonitor(config: StatusMonitorConfig = {}): StatusMonitor<Monitor> {
+function createNodeStatusMonitor(config: StatusMonitorConfig = {}): StatusMonitor<Monitor, false> {
     const monitor = createMonitor(config);
 
     return assembleStatusMonitor(monitor, {
@@ -117,14 +119,14 @@ function createNodeStatusMonitor(config: StatusMonitorConfig = {}): StatusMonito
             });
         },
         enableStream: true,
-        isEdgeMode: false
+        isEdgeMode: false as const
     });
 }
 
 /**
  * Create the request-only edge monitor regardless of the detected runtime.
  */
-export function statusMonitorEdge(config: StatusMonitorConfig = {}): StatusMonitor<EdgeMonitor> {
+export function statusMonitorEdge(config: StatusMonitorConfig = {}): StatusMonitor<EdgeMonitor, true> {
     return createEdgeStatusMonitor(config);
 }
 

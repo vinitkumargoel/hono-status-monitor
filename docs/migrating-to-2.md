@@ -136,7 +136,7 @@ Checked:
 - `ignorePaths` is an array of strings/RegExps or a function;
 - each `healthChecks` entry is a function or `{ check }`;
 - `store` implements `get`, `put` and `list`;
-- `logger` is `false` or implements `log`, `warn` and `error`.
+- `logger` is `false` or implements `warn` and `error` (`log` or `info` is used for informational messages when present, so pino works as is).
 
 Numeric strings (from env vars) are still accepted, and `undefined` still means "use the default".
 

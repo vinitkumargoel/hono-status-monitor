@@ -52,10 +52,23 @@ describe('config validation', () => {
         ['a bad ignorePaths entry', { ignorePaths: [42] }, 'ignorePaths must be an array of strings/RegExps or a function'],
         ['a health check without a function', { healthChecks: { db: { required: false } } }, 'healthChecks.db must be a function or { check }'],
         ['an incomplete store', { store: { get() {} } }, 'store must implement get, put and list'],
-        ['a bad logger', { logger: {} }, 'logger must be false or implement log, warn and error'],
+        ['a bad logger', { logger: {} }, 'logger must be false or implement warn and error'],
         ['a non-numeric alert', { alerts: { ...defaults.alerts, cpu: 'high' } }, 'alerts.cpu must be a finite number; got "high"']
     ])('rejects %s', (_, over, message) => {
         expect(() => validateConfig({ ...defaults, ...over } as never)).toThrow(message);
+    });
+
+    it('truncates long string values in the message', () => {
+        const secret = 'not-a-real-token-but-long-enough-to-truncate';
+        let message = '';
+        try {
+            validateConfig({ ...defaults, pollingInterval: secret as unknown as number });
+        } catch (e) {
+            message = (e as Error).message;
+        }
+        expect(message).toContain('pollingInterval must be a number > 0');
+        expect(message).not.toContain(secret);
+        expect(message).toContain(`(${secret.length} chars)`);
     });
 
     it('is applied by both monitors', () => {

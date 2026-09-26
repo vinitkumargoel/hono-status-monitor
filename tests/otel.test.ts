@@ -129,6 +129,19 @@ describe('registerOtelMetrics', () => {
         expect(find(obs, 'hono.system.load_average.1m')[0].value).toBe(0.75);
     });
 
+    it('keeps counters monotonic when the snapshot totals drop (resetStats)', async () => {
+        const { meter, collect } = fakeMeter();
+        let totals = { totalRequests: 100, statusCodes: { '200': 90, '500': 10 } };
+        registerOtelMetrics(meter, { getMetrics: async () => snapshot(totals) });
+        await collect();
+        totals = { totalRequests: 5, statusCodes: { '200': 5 } as never }; // reset, then 5 more requests
+        const obs = await collect();
+        expect(find(obs, 'hono.http.requests')[0].value).toBe(105);
+        expect(find(obs, 'hono.http.responses', { status: '200' })[0].value).toBe(95);
+        // Gauges are not adjusted.
+        expect(find(obs, 'hono.http.request.rate')[0].value).toBe(12.5);
+    });
+
     it('computes one snapshot per collection cycle', async () => {
         const { meter, collect, batches } = fakeMeter();
         const getMetrics = vi.fn(async () => snapshot());

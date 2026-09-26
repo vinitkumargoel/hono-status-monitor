@@ -51,7 +51,7 @@ export {
  * export default app;
  * ```
  */
-export function statusMonitor(config: StatusMonitorConfig = {}): StatusMonitor<EdgeMonitor> {
+export function statusMonitor(config: StatusMonitorConfig = {}): StatusMonitor<EdgeMonitor, true> {
     return createEdgeStatusMonitor(config);
 }
 

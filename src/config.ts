@@ -55,11 +55,22 @@ export function baseDefaults(): Required<StatusMonitorConfig> {
     };
 }
 
-const SILENT: StatusLogger = { log() {}, warn() {}, error() {} };
+/** A logger with every method present, as the monitors use it internally. */
+export type ResolvedLogger = Required<Pick<StatusLogger, 'log' | 'warn' | 'error'>>;
 
-/** The logger a config resolves to (`false` → silent). */
-export function resolveLogger(logger: StatusLogger | false | undefined): StatusLogger {
-    return logger === false ? SILENT : logger ?? console;
+const noop = () => {};
+const SILENT: ResolvedLogger = { log: noop, warn: noop, error: noop };
+
+/** The logger a config resolves to (`false` → silent; `log` falls back to `info`). */
+export function resolveLogger(logger: StatusLogger | false | undefined): ResolvedLogger {
+    if (logger === false) return SILENT;
+    const l = logger ?? console;
+    const info = l.log ?? l.info;
+    return {
+        log: info ? info.bind(l) : noop,
+        warn: l.warn.bind(l),
+        error: l.error.bind(l)
+    };
 }
 
 /** Drop keys whose value is `undefined`, so they can't shadow a default. */
@@ -134,8 +145,14 @@ const FUNCTION_KEYS = ['healthCheck', 'normalizePath', 'authorize', 'onAlert'] a
 const BOOLEAN_KEYS = ['clusterMode', 'publicAccess', 'prometheus', 'prometheusHistogram', 'inlineCharts', 'securityHeaders'] as const;
 const STRING_KEYS = ['path', 'title', 'prometheusPrefix', 'chartjsUrl', 'chartAdapterUrl', 'instanceId'] as const;
 
+/**
+ * A short rendering of a rejected value for the error message. Strings are
+ * truncated, so a secret pasted into the wrong option isn't logged whole.
+ */
 function describe(value: unknown): string {
-    if (typeof value === 'string') return JSON.stringify(value);
+    if (typeof value === 'string') {
+        return value.length > 24 ? `${JSON.stringify(value.slice(0, 12))}… (${value.length} chars)` : JSON.stringify(value);
+    }
     if (typeof value === 'function') return 'a function';
     if (Array.isArray(value)) return 'an array';
     return String(value);
@@ -205,8 +222,8 @@ export function validateConfig<C extends Required<StatusMonitorConfig>>(config: 
         }
     }
     const logger = out.logger as unknown as Record<string, unknown> | false;
-    if (logger !== false && (typeof logger?.log !== 'function' || typeof logger?.warn !== 'function' || typeof logger?.error !== 'function')) {
-        problems.push('logger must be false or implement log, warn and error');
+    if (logger !== false && (typeof logger?.warn !== 'function' || typeof logger?.error !== 'function')) {
+        problems.push('logger must be false or implement warn and error');
     }
     const store = out.store as unknown as Record<string, unknown> | undefined;
     if (store !== undefined && (typeof store?.get !== 'function' || typeof store?.put !== 'function' || typeof store?.list !== 'function')) {

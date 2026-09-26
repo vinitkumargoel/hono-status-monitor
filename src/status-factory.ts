@@ -36,7 +36,7 @@ export interface AssemblableMonitor {
 /** Minimum age of the health data sent with dashboard polls. */
 const DASHBOARD_HEALTH_MAX_AGE_MS = 5000;
 
-export interface AssembleOptions<M extends AssemblableMonitor> {
+export interface AssembleOptions<M extends AssemblableMonitor, E extends boolean> {
     /**
      * Produce the dashboard HTML. Called per request, and awaited, so callers
      * can lazily `import()` the dashboard module instead of pulling ~27 KB of
@@ -50,7 +50,7 @@ export interface AssembleOptions<M extends AssemblableMonitor> {
     /** Register the SSE `/api/stream` route. Off on edge isolates. */
     enableStream: boolean;
     /** Reported on the returned handle and used by consumers to branch. */
-    isEdgeMode: boolean;
+    isEdgeMode: E;
 }
 
 /**
@@ -59,10 +59,10 @@ export interface AssembleOptions<M extends AssemblableMonitor> {
  * Route surface: `GET /` (dashboard), `GET /api/metrics`, plus `/health`,
  * `/prometheus` and optionally `/api/stream` via `registerCommonRoutes`.
  */
-export function assembleStatusMonitor<M extends AssemblableMonitor>(
+export function assembleStatusMonitor<M extends AssemblableMonitor, E extends boolean>(
     monitor: M,
-    options: AssembleOptions<M>
-): StatusMonitor<M> {
+    options: AssembleOptions<M, E>
+): StatusMonitor<M, E> {
     // Collection starts on the first tracked request or status-route hit (or
     // an explicit start()), not at construction, so creating a monitor has no
     // side effects. stop() is final until start() is called again.

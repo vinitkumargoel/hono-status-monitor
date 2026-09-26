@@ -27,6 +27,19 @@ describe('logger', () => {
         expect(lines.some((l) => l.startsWith('warn') && l.includes('closed until you configure access'))).toBe(true);
     });
 
+    it('accepts a pino-style logger (info, no log)', () => {
+        const lines: string[] = [];
+        const pinoLike = {
+            info: (m: string) => lines.push(`info ${m}`),
+            warn: (m: string) => lines.push(`warn ${m}`),
+            error: (m: string) => lines.push(`error ${m}`)
+        };
+        const monitor = createMonitor({ logger: pinoLike });
+        monitor.start();
+        monitor.stop();
+        expect(lines).toContain('info 📊 Status monitor started');
+    });
+
     it('is silent with logger: false', () => {
         const log = vi.spyOn(console, 'log');
         const warn = vi.spyOn(console, 'warn');

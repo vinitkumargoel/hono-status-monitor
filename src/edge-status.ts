@@ -7,7 +7,7 @@ import type { StatusMonitor, StatusMonitorConfig } from './types.js';
 import { createEdgeMonitor, type EdgeMonitor } from './monitor-edge.js';
 import { assembleStatusMonitor } from './status-factory.js';
 
-export function createEdgeStatusMonitor(config: StatusMonitorConfig = {}): StatusMonitor<EdgeMonitor> {
+export function createEdgeStatusMonitor(config: StatusMonitorConfig = {}): StatusMonitor<EdgeMonitor, true> {
     const monitor = createEdgeMonitor(config);
 
     return assembleStatusMonitor(monitor, {
@@ -32,6 +32,6 @@ export function createEdgeStatusMonitor(config: StatusMonitorConfig = {}): Statu
         },
         // No SSE stream on edge isolates.
         enableStream: false,
-        isEdgeMode: true
+        isEdgeMode: true as const
     });
 }
