@@ -52,18 +52,24 @@ describe('mergeSnapshots', () => {
         expect(merged.instanceCount).toBe(1);
     });
 
-    it('sums totals and averages rates across isolates', () => {
+    it('sums totals and traffic-weights rates across isolates', () => {
         const a = snap({ rps: 10, totalRequests: 100, activeConnections: 2, responseTime: 20, errorRate: 4, statusCodes: { '200': 100 } });
         const b = snap({ rps: 30, totalRequests: 300, activeConnections: 4, responseTime: 40, errorRate: 8, statusCodes: { '200': 300, '500': 5 } });
         const merged = mergeSnapshots(a, [b]);
         expect(merged.rps).toBe(40);
         expect(merged.totalRequests).toBe(400);
         expect(merged.activeConnections).toBe(6);
-        expect(merged.responseTime).toBe(30); // avg
-        expect(merged.errorRate).toBe(6);     // avg
+        expect(merged.responseTime).toBe(35); // (20*10 + 40*30) / 40 rps
+        expect(merged.errorRate).toBe(7);     // (4*100 + 8*300) / 400 requests
         expect(merged.statusCodes['200']).toBe(400);
         expect(merged.statusCodes['500']).toBe(5);
         expect(merged.instanceCount).toBe(2);
+    });
+
+    it('falls back to a plain mean when no isolate has traffic', () => {
+        const merged = mergeSnapshots(snap({ responseTime: 10, errorRate: 2 }), [snap({ responseTime: 30, errorRate: 4 })]);
+        expect(merged.responseTime).toBe(20);
+        expect(merged.errorRate).toBe(3);
     });
 
     it('merges overlapping routes without double counting within an isolate', () => {

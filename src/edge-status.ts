@@ -24,7 +24,10 @@ export function createEdgeStatusMonitor(config: StatusMonitorConfig = {}) {
                 pollingInterval: m.config.pollingInterval,
                 chartjsUrl: m.config.chartjsUrl,
                 chartAdapterUrl: m.config.chartAdapterUrl,
-                inlineCharts: m.config.inlineCharts
+                inlineCharts: m.config.inlineCharts,
+                maxRoutes: m.config.maxRoutes,
+                maxRecentErrors: m.config.maxRecentErrors,
+                retentionSeconds: m.config.retentionSeconds
             });
         },
         // No SSE stream on edge isolates.

@@ -8,52 +8,21 @@ import type {
     StatusMonitorConfig,
     MetricDataPoint,
     AlertStatus,
-    AlertEvent,
-    HealthCheckResult,
     MetricsSnapshot,
-    ChartData,
-    StatusStore
+    ChartData
 } from './types.js';
 import { calculatePercentiles, defaultNormalizePath, formatUptime, round } from './metrics-utils.js';
 import { persistSnapshot, loadPeerSnapshots, mergeSnapshots, generateInstanceId } from './edge-store.js';
-import { createStatsCore, DEFAULT_HEALTH_CHECK } from './stats-core.js';
-import { mergeConfig, sanitizeConfig } from './config.js';
+import { createStatsCore } from './stats-core.js';
+import { baseDefaults, mergeConfig, resolveLogger, sanitizeConfig } from './config.js';
 import { detectPlatform } from './platform.js';
 
-// Default configuration for edge environments
+// Default configuration
 const DEFAULT_EDGE_CONFIG: Required<StatusMonitorConfig> = {
-    path: '/status',
-    title: 'Server Status',
-    socketPath: '/status/socket.io', // Not used in edge, included for compatibility
+    ...baseDefaults(),
     pollingInterval: 5000, // Dashboard polling interval (5s for edge)
-    updateInterval: 5000, // Polling interval (not real-time)
-    retentionSeconds: 60,
-    maxRecentErrors: 10,
-    maxRoutes: 10,
-    maxTrackedRoutes: 1000,
-    alerts: {
-        cpu: 80, // Not available in edge
-        memory: 90, // Not available in edge
-        responseTime: 500,
-        errorRate: 5,
-        eventLoopLag: 100 // Not available in edge
-    },
-    healthCheck: DEFAULT_HEALTH_CHECK,
-    healthCheckTimeout: 0, // no timeout unless configured
-    healthChecks: undefined as unknown as Record<string, () => Promise<HealthCheckResult>>,
-    normalizePath: (path: string) => path,
-    clusterMode: false, // Not supported in edge
-    authorize: undefined as unknown as (c: any) => boolean | Promise<boolean>,
-    onAlert: undefined as unknown as (event: AlertEvent) => void,
-    prometheus: true,
-    prometheusPrefix: 'hono',
-    chartjsUrl: undefined as unknown as string,
-    chartAdapterUrl: undefined as unknown as string,
-    inlineCharts: false,
-    securityHeaders: false,
-    store: undefined as unknown as StatusStore,
-    instanceId: undefined as unknown as string,
-    storeWriteInterval: 60000
+    updateInterval: 5000, // History bucket width; rolls forward on requests
+    clusterMode: false // Not supported in edge
 };
 
 /**
@@ -62,10 +31,12 @@ const DEFAULT_EDGE_CONFIG: Required<StatusMonitorConfig> = {
  */
 export function createEdgeMonitor(userConfig: StatusMonitorConfig = {}) {
     // Merge configuration
+    const logger = resolveLogger(userConfig.logger);
     const config: Required<StatusMonitorConfig> = sanitizeConfig(mergeConfig(DEFAULT_EDGE_CONFIG, userConfig, {
         normalizePath: userConfig.normalizePath || defaultNormalizePath,
         clusterMode: false // Never in cluster mode on edge
-    }), DEFAULT_EDGE_CONFIG);
+    }), DEFAULT_EDGE_CONFIG, (m) => logger.warn(m));
+
 
     const runtime = describeEdgeRuntime();
 
@@ -256,8 +227,45 @@ export function createEdgeMonitor(userConfig: StatusMonitorConfig = {}) {
         const now = Date.now();
         if (now - lastPersistTime < config.storeWriteInterval) return;
         lastPersistTime = now;
+        peerCache = null; // Our write is a good moment to refresh peers too.
         const ttlSeconds = Math.max(config.retentionSeconds, (config.storeWriteInterval / 1000) * 3);
         await persistSnapshot(config.store, instanceId, snapshot, ttlSeconds);
+    }
+
+    /**
+     * After each tracked request: persist this isolate's numbers when a write
+     * is due. Without this only isolates that served the dashboard ever wrote
+     * to the store, so the fleet view missed every isolate that just served
+     * traffic. Uses `waitUntil` so the write doesn't delay the response or get
+     * cut off when the isolate finishes the request.
+     */
+    function afterRequest(c: any): void {
+        if (!config.store || Date.now() - lastPersistTime < config.storeWriteInterval) return;
+        const work = getLocalSnapshot().then(maybePersist).catch(() => { /* best-effort */ });
+        let ctx: { waitUntil?: (p: Promise<unknown>) => void } | undefined;
+        try {
+            // Hono throws when the runtime provides no ExecutionContext.
+            ctx = c?.executionCtx;
+        } catch {
+            ctx = undefined;
+        }
+        try {
+            ctx?.waitUntil?.(work);
+        } catch {
+            /* fire-and-forget; `work` never rejects */
+        }
+    }
+
+    // Peer snapshots only change when a peer writes (every storeWriteInterval),
+    // so re-reading them on every dashboard poll is wasted KV reads.
+    const peerCacheMs = Math.min(config.storeWriteInterval, 30_000);
+    let peerCache: { at: number; peers: Promise<MetricsSnapshot[]> } | null = null;
+
+    function getPeers(): Promise<MetricsSnapshot[]> {
+        if (peerCache && Date.now() - peerCache.at < peerCacheMs) return peerCache.peers;
+        const peers = loadPeerSnapshots(config.store, instanceId, config.maxPeers);
+        peerCache = { at: Date.now(), peers };
+        return peers;
     }
 
     /**
@@ -271,7 +279,7 @@ export function createEdgeMonitor(userConfig: StatusMonitorConfig = {}) {
         // Best-effort persist + peer merge; never let store failures break the read.
         try {
             await maybePersist(local);
-            const peers = await loadPeerSnapshots(config.store, instanceId);
+            const peers = await getPeers();
             return mergeSnapshots(local, peers, {
                 maxRoutes: config.maxRoutes,
                 maxRecentErrors: config.maxRecentErrors
@@ -306,17 +314,17 @@ export function createEdgeMonitor(userConfig: StatusMonitorConfig = {}) {
     // No-op functions for compatibility
     function start(): void {
         // No interval needed in edge - updates happen on each request
-        console.log('📊 Status monitor started (edge mode)');
+        logger.log('📊 Status monitor started (edge mode)');
     }
 
     function stop(): void {
         // Nothing to stop in edge mode
-        console.log('📊 Status monitor stopped (edge mode)');
+        logger.log('📊 Status monitor stopped (edge mode)');
     }
 
     // Socket not available in edge
     function initSocket(): null {
-        console.log('📊 WebSocket not available in edge mode, use polling');
+        logger.log('📊 WebSocket not available in edge mode, use polling');
         return null;
     }
 
@@ -324,12 +332,17 @@ export function createEdgeMonitor(userConfig: StatusMonitorConfig = {}) {
         config,
         trackRequest: core.trackRequest,
         trackRequestComplete: core.trackRequestComplete,
+        beginRequest: core.beginRequest,
+        endRequest: core.endRequest,
+        getHistograms: core.getHistograms,
+        logger,
         trackRateLimitEvent: core.trackRateLimitEvent,
         getMetricsSnapshot,
         getChartData,
         getHealthReport: core.getHealthReport,
         healthConfigured: core.healthConfigured,
         resetStats,
+        afterRequest,
         start,
         stop,
         initSocket,

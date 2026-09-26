@@ -72,6 +72,24 @@ describe('cluster aggregation', () => {
         expect(agg.workerCount).toBe(0);
     });
 
+    it('appends delta chart messages to what a worker sent before, trimmed to retention', () => {
+        const agg = createClusterAggregator({ retentionSeconds: 2 });
+        const series = (...ts: number[]) => ({ ...emptyCharts(), rps: ts.map((t) => ({ timestamp: t, value: 1 })) });
+        agg.updateWorkerMetrics(msg(1, {}, series(1000, 2000)));
+        agg.updateWorkerMetrics({ ...msg(1, {}, series(2000, 3000)), delta: true });
+        agg.updateWorkerMetrics({ ...msg(1, {}, series(4000)), delta: true });
+        const merged = agg.aggregateCharts(emptyCharts());
+        expect(merged.rps.map((p) => p.timestamp)).toEqual([2000, 3000, 4000]);
+    });
+
+    it('treats a delta from a restarted worker (new pid) as a fresh series', () => {
+        const agg = createClusterAggregator();
+        const series = (t: number) => ({ ...emptyCharts(), rps: [{ timestamp: t, value: 1 }] });
+        agg.updateWorkerMetrics(msg(1, {}, series(1000)));
+        agg.updateWorkerMetrics({ ...msg(1, {}, series(5000)), pid: 9999, delta: true });
+        expect(agg.aggregateCharts(emptyCharts()).rps.map((p) => p.timestamp)).toEqual([5000]);
+    });
+
     it('ignores malformed messages', () => {
         const agg = createClusterAggregator();
         agg.updateWorkerMetrics({ ...msg(1, {}), metrics: { rps: 'x' } } as unknown as WorkerMetricsMessage);

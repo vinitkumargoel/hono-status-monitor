@@ -1,0 +1,10 @@
+name = "hono-status-monitor-example"
+main = "src/index.ts"
+compatibility_date = "2025-01-01"
+# No nodejs_compat needed: the /edge entry has no node: imports.
+
+# Cross-isolate store for the status monitor.
+# Create it with `npx wrangler kv namespace create STATUS_KV` and paste the id.
+[[kv_namespaces]]
+binding = "STATUS_KV"
+id = "<your-kv-namespace-id>"

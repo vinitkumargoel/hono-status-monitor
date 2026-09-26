@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Report a security vulnerability
+    url: https://github.com/vinitkumargoel/hono-status-monitor/security/advisories/new
+    about: Report vulnerabilities privately through GitHub Security Advisories, not as a public issue.
+  - name: Troubleshooting guide
+    url: https://github.com/vinitkumargoel/hono-status-monitor/blob/main/docs/troubleshooting.md
+    about: Common problems and fixes.

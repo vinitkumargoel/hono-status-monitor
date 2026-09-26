@@ -1,7 +1,7 @@
 {
     "name": "hono-status-monitor",
-    "version": "1.1.1",
-    "description": "Real-time server monitoring dashboard for Hono.js. Works with Node.js, Bun, and Cloudflare Workers. Express-status-monitor style metrics with polling updates.",
+    "version": "1.2.0",
+    "description": "Real-time server monitoring dashboard for Hono.js. Works with Node.js, Bun, and Cloudflare Workers. Express-status-monitor style dashboard with live updates, Prometheus and health endpoints.",
     "main": "dist/index.js",
     "types": "dist/index.d.ts",
     "type": "module",
@@ -33,7 +33,9 @@
         "smoke": "node scripts/smoke.mjs",
         "check:package": "publint && attw --pack . --profile esm-only",
         "check": "npm run typecheck && npm run lint && npm run test:coverage && npm run build && npm run smoke && npm run size && npm run check:package",
-        "size": "node scripts/size-check.mjs"
+        "size": "node scripts/size-check.mjs",
+        "smoke:workerd": "node scripts/workerd-smoke.mjs",
+        "changeset": "changeset"
     },
     "keywords": [
         "hono",
@@ -66,11 +68,14 @@
     "devDependencies": {
         "@arethetypeswrong/cli": "^0.18.5",
         "@biomejs/biome": "^2.5.14",
+        "@changesets/cli": "^3.0.3",
         "@hono/node-server": "^1.19.14",
+        "@types/jsdom": "^30.0.0",
         "@types/node": "^20.19.43",
         "@vitest/coverage-v8": "^4.1.11",
         "esbuild": "^0.28.2",
         "hono": "^4.12.31",
+        "jsdom": "^30.1.1",
         "publint": "^0.3.24",
         "typescript": "^5.9.3",
         "vitest": "^4.1.10"

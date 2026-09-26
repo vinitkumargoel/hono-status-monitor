@@ -9,12 +9,9 @@ import type {
     StatusMonitorConfig,
     MetricDataPoint,
     AlertStatus,
-    AlertEvent,
     DatabaseStats,
-    HealthCheckResult,
     MetricsSnapshot,
-    ChartData,
-    StatusStore
+    ChartData
 } from './types.js';
 import {
     isClusterWorker,
@@ -25,44 +22,11 @@ import {
 } from './cluster.js';
 import { calculatePercentiles, defaultNormalizePath, formatUptime, round } from './metrics-utils.js';
 import { detectPlatform } from './platform.js';
-import { createStatsCore, DEFAULT_HEALTH_CHECK } from './stats-core.js';
-import { mergeConfig, sanitizeConfig } from './config.js';
+import { createStatsCore } from './stats-core.js';
+import { baseDefaults, mergeConfig, resolveLogger, sanitizeConfig } from './config.js';
 
 // Default configuration
-const DEFAULT_CONFIG: Required<StatusMonitorConfig> = {
-    path: '/status',
-    title: 'Server Status',
-    socketPath: '/status/socket.io', // Kept for compatibility, but not used
-    pollingInterval: 1000, // Dashboard polling interval
-    updateInterval: 1000,
-    retentionSeconds: 60,
-    maxRecentErrors: 10,
-    maxRoutes: 10,
-    maxTrackedRoutes: 1000,
-    alerts: {
-        cpu: 80,
-        memory: 90,
-        responseTime: 500,
-        errorRate: 5,
-        eventLoopLag: 100
-    },
-    healthCheck: DEFAULT_HEALTH_CHECK,
-    healthCheckTimeout: 0, // no timeout unless configured
-    healthChecks: undefined as unknown as Record<string, () => Promise<HealthCheckResult>>,
-    normalizePath: (path: string) => path,
-    clusterMode: undefined as unknown as boolean, // Will be auto-detected
-    authorize: undefined as unknown as (c: any) => boolean | Promise<boolean>,
-    onAlert: undefined as unknown as (event: AlertEvent) => void,
-    prometheus: true,
-    prometheusPrefix: 'hono',
-    chartjsUrl: undefined as unknown as string,
-    chartAdapterUrl: undefined as unknown as string,
-    inlineCharts: false,
-    securityHeaders: false,
-    store: undefined as unknown as StatusStore,
-    instanceId: undefined as unknown as string,
-    storeWriteInterval: 60000
-};
+const DEFAULT_CONFIG: Required<StatusMonitorConfig> = baseDefaults();
 
 /**
  * Create a status monitor instance
@@ -70,13 +34,15 @@ const DEFAULT_CONFIG: Required<StatusMonitorConfig> = {
 export function createMonitor(userConfig: StatusMonitorConfig = {}) {
     const inClusterMode = userConfig.clusterMode ?? isClusterWorker();
 
+    const logger = resolveLogger(userConfig.logger);
     const config: Required<StatusMonitorConfig> = sanitizeConfig(mergeConfig(DEFAULT_CONFIG, userConfig, {
         normalizePath: userConfig.normalizePath || defaultNormalizePath,
         clusterMode: inClusterMode
-    }), DEFAULT_CONFIG);
+    }), DEFAULT_CONFIG, (m) => logger.warn(m));
+
 
     const clusterAggregator: ClusterAggregator | null = inClusterMode
-        ? createClusterAggregator({ maxRoutes: config.maxRoutes })
+        ? createClusterAggregator({ maxRoutes: config.maxRoutes, retentionSeconds: config.retentionSeconds })
         : null;
 
     // In-memory metrics storage
@@ -404,9 +370,34 @@ export function createMonitor(userConfig: StatusMonitorConfig = {}) {
         if (config.clusterMode && process.send) {
             const dbStats = await getDatabaseStats();
             const snapshot = await getMetricsSnapshot(dbStats);
-            const charts = getChartData();
-            sendMetricsToMaster(snapshot, charts);
+            sendMetricsToMaster(snapshot, ...nextChartPayload());
         }
+    }
+
+    // Cluster IPC: send only chart points added since the last message, with a
+    // full resend every FULL_SYNC_EVERY messages so a receiver that started
+    // late (or restarted) catches up. Cuts per-tick IPC from 8 x retention
+    // points to ~8 points.
+    const FULL_SYNC_EVERY = 30;
+    let chartMessages = 0;
+    let lastSentChartTs = -Infinity;
+
+    function nextChartPayload(): [ChartData, boolean] {
+        const charts = getChartData();
+        const full = chartMessages++ % FULL_SYNC_EVERY === 0;
+        const since = lastSentChartTs;
+        let newest = lastSentChartTs;
+        for (const series of Object.values(charts)) {
+            const last = series[series.length - 1];
+            if (last && last.timestamp > newest) newest = last.timestamp;
+        }
+        lastSentChartTs = newest;
+        if (full) return [charts, false];
+        const delta = {} as ChartData;
+        for (const key of Object.keys(charts) as (keyof ChartData)[]) {
+            delta[key] = charts[key].filter((p) => p.timestamp > since);
+        }
+        return [delta, true];
     }
 
     async function getMetricsSnapshot(dbStats?: DatabaseStats): Promise<MetricsSnapshot> {
@@ -477,7 +468,7 @@ export function createMonitor(userConfig: StatusMonitorConfig = {}) {
             // Don't hold the process open: a script or test that forgets stop()
             // should still exit once its own work is done.
             metricsInterval.unref?.();
-            console.log('📊 Status monitor started');
+            logger.log('📊 Status monitor started');
         }
     }
 
@@ -485,7 +476,7 @@ export function createMonitor(userConfig: StatusMonitorConfig = {}) {
         if (metricsInterval) {
             clearInterval(metricsInterval);
             metricsInterval = null;
-            console.log('📊 Status monitor stopped');
+            logger.log('📊 Status monitor stopped');
         }
         try { eventLoopHistogram?.disable(); } catch { /* ignore */ }
         eventLoopHistogram = null;
@@ -510,7 +501,7 @@ export function createMonitor(userConfig: StatusMonitorConfig = {}) {
 
     // initSocket is now a no-op for backwards compatibility
     function initSocket(): null {
-        console.log('📊 Status monitor using polling mode (no WebSocket)');
+        logger.log('📊 Status monitor using polling mode (no WebSocket)');
 
         // Set up IPC message handler for cluster mode
         if (config.clusterMode && clusterAggregator) {
@@ -519,7 +510,7 @@ export function createMonitor(userConfig: StatusMonitorConfig = {}) {
                     clusterAggregator.updateWorkerMetrics(message);
                 }
             });
-            console.log('📊 Status monitor initialized (cluster mode - aggregating workers)');
+            logger.log('📊 Status monitor initialized (cluster mode - aggregating workers)');
         }
 
         return null;
@@ -547,6 +538,10 @@ export function createMonitor(userConfig: StatusMonitorConfig = {}) {
         config,
         trackRequest: core.trackRequest,
         trackRequestComplete: core.trackRequestComplete,
+        beginRequest: core.beginRequest,
+        endRequest: core.endRequest,
+        getHistograms: core.getHistograms,
+        logger,
         trackRateLimitEvent: core.trackRateLimitEvent,
         getMetricsSnapshot: getAggregatedSnapshot,
         getChartData: getAggregatedCharts,

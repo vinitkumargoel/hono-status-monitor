@@ -1,0 +1,49 @@
+name: Feature request
+description: Suggest a new option, metric or integration.
+labels: [enhancement]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: What are you trying to do, and what gets in the way today?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed solution
+      description: The API or behavior you'd like. A config snippet is useful.
+      render: ts
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+  - type: dropdown
+    id: runtime
+    attributes:
+      label: Runtimes this affects
+      multiple: true
+      options:
+        - Node.js
+        - Bun
+        - Cloudflare Workers
+        - Deno
+        - Vercel Edge
+        - All
+  - type: input
+    id: package-version
+    attributes:
+      label: hono-status-monitor version
+  - type: input
+    id: hono-version
+    attributes:
+      label: hono version
+  - type: checkboxes
+    id: contribute
+    attributes:
+      label: Contribution
+      options:
+        - label: I'm willing to open a PR for this.

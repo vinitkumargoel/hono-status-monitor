@@ -57,10 +57,15 @@ function isValidSnapshot(v: unknown): v is MetricsSnapshot {
     );
 }
 
-/** Load all peer snapshots (excluding this instance). Never throws. */
+/**
+ * Load peer snapshots (excluding this instance), at most `maxPeers` of them so
+ * a large fleet can't turn one dashboard read into hundreds of KV reads.
+ * Never throws.
+ */
 export async function loadPeerSnapshots(
     store: StatusStore,
-    excludeInstanceId: string
+    excludeInstanceId: string,
+    maxPeers = Infinity
 ): Promise<MetricsSnapshot[]> {
     try {
         const listing = await store.list({ prefix: KEY_PREFIX });
@@ -68,6 +73,7 @@ export async function loadPeerSnapshots(
         const peers = await Promise.all(
             listing.keys
                 .filter((k) => k.name !== ownKey)
+                .slice(0, maxPeers)
                 .map(async (k) => {
                     try {
                         const raw = await store.get(k.name);
@@ -122,8 +128,11 @@ function dedupePerSnapshot(s: MetricsSnapshot): RouteStats[] {
  * @param limits.maxRoutes        cap for top/slowest/error route lists (default 10)
  * @param limits.maxRecentErrors  cap for the merged recent-error list (default 10)
  *
- * Rates (responseTime, errorRate) are an unweighted mean across isolates; counts
- * (rps, totalRequests, activeConnections, statusCodes) are summed.
+ * Counts (rps, totalRequests, activeConnections, statusCodes) are summed. Rates
+ * are weighted by traffic so an idle isolate can't drag the fleet figure
+ * around: responseTime by each isolate's rps, errorRate by its totalRequests
+ * (which makes it exact). With no traffic anywhere they fall back to a plain
+ * mean.
  */
 export function mergeSnapshots(
     base: MetricsSnapshot,
@@ -145,6 +154,8 @@ export function mergeSnapshots(
     let totalActiveConnections = 0;
     let sumResponseTime = 0;
     let sumErrorRate = 0;
+    let weightedResponseTime = 0;
+    let weightedErrorRate = 0;
 
     const statusCodes: StatusCodeCount = {};
     let rateLimitBlocked = 0;
@@ -158,6 +169,8 @@ export function mergeSnapshots(
         totalActiveConnections += s.activeConnections || 0;
         sumResponseTime += s.responseTime || 0;
         sumErrorRate += s.errorRate || 0;
+        weightedResponseTime += (s.responseTime || 0) * (s.rps || 0);
+        weightedErrorRate += (s.errorRate || 0) * (s.totalRequests || 0);
 
         for (const [code, count] of Object.entries(s.statusCodes || {})) {
             statusCodes[code] = (statusCodes[code] || 0) + (count as number);
@@ -179,8 +192,8 @@ export function mergeSnapshots(
         rps: round(totalRps),
         totalRequests,
         activeConnections: totalActiveConnections,
-        responseTime: round(sumResponseTime / instanceCount),
-        errorRate: round(sumErrorRate / instanceCount),
+        responseTime: round(totalRps > 0 ? weightedResponseTime / totalRps : sumResponseTime / instanceCount),
+        errorRate: round(totalRequests > 0 ? weightedErrorRate / totalRequests : sumErrorRate / instanceCount),
         statusCodes,
         rateLimitStats: { blocked: rateLimitBlocked, total: rateLimitTotal },
         topRoutes,

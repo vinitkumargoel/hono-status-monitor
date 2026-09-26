@@ -4,6 +4,7 @@
 // =============================================================================
 
 import type { MetricsSnapshot } from './types.js';
+import { HISTOGRAM_BUCKETS_SECONDS, type RouteHistogram } from './stats-core.js';
 
 /**
  * Escape a string for safe interpolation into HTML text/attribute contexts.
@@ -36,7 +37,11 @@ function line(name: string, value: number, labels?: Record<string, string>): str
  * Render a metrics snapshot as Prometheus text exposition format (v0.0.4).
  * Scrapeable by Prometheus, Grafana Agent, VictoriaMetrics, etc.
  */
-export function toPrometheus(snapshot: MetricsSnapshot, prefix = 'hono'): string {
+export function toPrometheus(
+    snapshot: MetricsSnapshot,
+    prefix = 'hono',
+    histograms: RouteHistogram[] = []
+): string {
     const p = prefix.replace(/[^a-zA-Z0-9_]/g, '_');
     let out = '';
 
@@ -80,6 +85,24 @@ export function toPrometheus(snapshot: MetricsSnapshot, prefix = 'hono'): string
 
     if (typeof snapshot.workerCount === 'number') {
         gauge('cluster_workers', 'Active cluster workers', snapshot.workerCount);
+    }
+
+    // Aggregatable latency: a real histogram, labelled by route, so Prometheus
+    // can compute quantiles across instances (the p50/p95/p99 gauges above are
+    // per-instance and can't be averaged meaningfully). Per process: in cluster
+    // mode each worker exposes its own, which is how Prometheus expects it.
+    if (histograms.length > 0) {
+        const name = `${p}_http_request_duration_seconds`;
+        out += `# HELP ${name} HTTP request latency by method, route and status\n# TYPE ${name} histogram\n`;
+        for (const h of histograms) {
+            const labels = { method: h.method, route: h.route, status: String(h.status) };
+            HISTOGRAM_BUCKETS_SECONDS.forEach((le, i) => {
+                out += line(`${name}_bucket`, h.buckets[i], { ...labels, le: String(le) });
+            });
+            out += line(`${name}_bucket`, h.count, { ...labels, le: '+Inf' });
+            out += line(`${name}_sum`, Math.round(h.sum * 1e6) / 1e6, labels);
+            out += line(`${name}_count`, h.count, labels);
+        }
     }
 
     return out;

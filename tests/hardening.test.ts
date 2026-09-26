@@ -4,21 +4,20 @@ import { statusMonitor } from '../src/index';
 import { statusMonitor as edgeStatusMonitor } from '../src/index-edge';
 import { createMonitor } from '../src/monitor';
 import { createEdgeMonitor, describeEdgeRuntime } from '../src/monitor-edge';
-import { sanitizeConfig } from '../src/config';
+import { baseDefaults, sanitizeConfig } from '../src/config';
 import { isWorkerMetricsMessage } from '../src/cluster';
 import { toPrometheus } from '../src/format';
 import { generateDashboard } from '../src/dashboard';
 import { DEFAULT_CHARTJS_URL, DEFAULT_SRI } from '../src/chart-cdn';
 import { dashboardSecurityHeaders, scriptSourceFor } from '../src/security';
-import type { MetricsSnapshot, StatusMonitorConfig } from '../src/types';
+import type { MetricsSnapshot } from '../src/types';
 
 const silence = () => vi.spyOn(console, 'log').mockImplementation(() => {});
 
 afterEach(() => vi.restoreAllMocks());
 
 describe('config sanitizing', () => {
-    const defaults = { pollingInterval: 1000, updateInterval: 1000, retentionSeconds: 60, maxRecentErrors: 10,
-        maxRoutes: 10, maxTrackedRoutes: 1000, storeWriteInterval: 60000, healthCheckTimeout: 5000 } as Required<StatusMonitorConfig>;
+    const defaults = baseDefaults();
 
     it('replaces unusable values with the default, warning for each', () => {
         const warn = vi.fn();

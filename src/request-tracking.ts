@@ -6,9 +6,48 @@
 interface TrackableMonitor {
     config: {
         path: string;
+        groupBy?: 'path' | 'route';
+        ignorePaths?: Array<string | RegExp> | ((path: string) => boolean);
     };
     trackRequest(path: string, method: string): void;
     trackRequestComplete(path: string, method: string, durationMs: number, statusCode: number): void;
+    /** Present on the built-in monitors; enables route-pattern grouping. */
+    beginRequest?(): void;
+    endRequest?(route: string, method: string, durationMs: number, statusCode: number, isPattern?: boolean): void;
+    /** Called after each tracked request (edge store persistence). */
+    afterRequest?(c: any): void;
+}
+
+/** Compile `ignorePaths` into a single predicate (or null when empty). */
+export function compileIgnore(
+    ignore: Array<string | RegExp> | ((path: string) => boolean) | undefined
+): ((path: string) => boolean) | null {
+    if (!ignore) return null;
+    if (typeof ignore === 'function') return ignore;
+    if (ignore.length === 0) return null;
+    const exact = new Set<string>();
+    const prefixes: string[] = [];
+    const patterns: RegExp[] = [];
+    for (const rule of ignore) {
+        if (rule instanceof RegExp) patterns.push(rule);
+        else if (rule.endsWith('/*')) prefixes.push(rule.slice(0, -1));
+        else exact.add(rule);
+    }
+    return (path) =>
+        exact.has(path) ||
+        prefixes.some((p) => path.startsWith(p) || path === p.slice(0, -1)) ||
+        patterns.some((re) => { re.lastIndex = 0; return re.test(path); });
+}
+
+/**
+ * The Hono route pattern that handled the request, or null when only a
+ * catch-all (`*`, `/*`) matched — i.e. the request hit no route, and grouping
+ * it under the catch-all would lump every 404 together.
+ */
+function matchedRoutePattern(c: any): string | null {
+    const pattern = c.req?.routePath;
+    if (typeof pattern !== 'string' || pattern === '*' || pattern === '/*') return null;
+    return pattern;
 }
 
 function normalizeMountPath(path: string): string {
@@ -59,14 +98,19 @@ function getResponseStatus(c: any, error?: unknown): number {
  * Also exported as `createMiddleware` for backwards compatibility.
  */
 export function createRequestTrackingMiddleware(monitor: TrackableMonitor) {
-    // The mount path is fixed for the monitor's lifetime; normalize it once
-    // rather than running the regex on every request.
+    // Fixed for the monitor's lifetime; computed once rather than per request.
     const mountPath = normalizeMountPath(monitor.config.path);
+    const ignored = compileIgnore(monitor.config.ignorePaths);
+    const { beginRequest, endRequest } = monitor;
+    const byRoute = monitor.config.groupBy === 'route' && !!beginRequest && !!endRequest;
+    // begin/end create the route at completion, which route grouping needs
+    // (the pattern is only known after the handler ran).
+    const split = !!beginRequest && !!endRequest;
 
     return async (c: any, next: () => Promise<void>) => {
         const path = c.req.path ?? new URL(c.req.url).pathname;
 
-        if (matchesMountPath(path, mountPath)) {
+        if (matchesMountPath(path, mountPath) || (ignored && ignored(path))) {
             await next();
             return;
         }
@@ -75,7 +119,8 @@ export function createRequestTrackingMiddleware(monitor: TrackableMonitor) {
         const startTime = performance.now();
         let thrownError: unknown;
 
-        monitor.trackRequest(path, method);
+        if (split && beginRequest) beginRequest();
+        else monitor.trackRequest(path, method);
 
         try {
             await next();
@@ -84,7 +129,14 @@ export function createRequestTrackingMiddleware(monitor: TrackableMonitor) {
             throw error;
         } finally {
             const duration = performance.now() - startTime;
-            monitor.trackRequestComplete(path, method, duration, getResponseStatus(c, thrownError));
+            const status = getResponseStatus(c, thrownError);
+            if (split && endRequest) {
+                const pattern = byRoute ? matchedRoutePattern(c) : null;
+                endRequest(pattern ?? path, method, duration, status, pattern !== null);
+            } else {
+                monitor.trackRequestComplete(path, method, duration, status);
+            }
+            monitor.afterRequest?.(c);
         }
     };
 }

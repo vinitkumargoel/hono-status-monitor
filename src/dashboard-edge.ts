@@ -10,7 +10,8 @@ import {
     DEFAULT_ADAPTER_URL,
     chartScriptTags,
     clientScript,
-    inlineScriptOpen
+    inlineScriptOpen,
+    THEME_BOOT_SCRIPT
 } from './dashboard-assets.js';
 
 /** Edge-only banner and status badge. */
@@ -45,6 +46,9 @@ export interface EdgeDashboardProps {
     platformLabel?: string;
     /** CSP nonce stamped on the inline client script. */
     nonce?: string;
+    maxRoutes?: number;
+    maxRecentErrors?: number;
+    retentionSeconds?: number;
 }
 
 /**
@@ -59,7 +63,10 @@ export function generateEdgeDashboard({
     chartAdapterUrl = DEFAULT_ADAPTER_URL,
     inlineCharts = false,
     platformLabel = 'Cloudflare Workers',
-    nonce
+    nonce,
+    maxRoutes,
+    maxRecentErrors,
+    retentionSeconds
 }: EdgeDashboardProps): string {
     const safeTitle = escapeHtml(title);
     const safeHostname = escapeHtml(hostname);
@@ -71,6 +78,7 @@ export function generateEdgeDashboard({
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>${safeTitle}</title>
+    ${inlineScriptOpen(nonce)}${THEME_BOOT_SCRIPT}</script>
     ${chartScriptTags(inlineCharts, chartjsUrl, chartAdapterUrl)}
     <style>
 ${BASE_CSS}
@@ -78,7 +86,7 @@ ${EDGE_CSS}
     </style>
 </head>
 <body>
-    <div class="container">
+    <main class="container">
         <header>
             <div class="title-section">
                 <h1>${safeTitle}</h1>
@@ -88,7 +96,7 @@ ${EDGE_CSS}
                 <button class="theme-toggle" id="themeToggle" type="button" title="Toggle dark mode" aria-label="Toggle dark mode">🌓</button>
                 <div class="status-badge edge" id="connBadge">
                     <span>☁️</span>
-                    <span id="connText">Edge Mode</span>
+                    <span id="connText" aria-live="polite">Edge Mode</span>
                 </div>
             </div>
         </header>
@@ -97,6 +105,8 @@ ${EDGE_CSS}
             <strong>☁️ Running in edge mode (${escapeHtml(platformLabel)})</strong>
             System metrics (CPU, Memory, Heap) are not available. Dashboard updates via polling every ${pollingSeconds} second${pollingSeconds !== 1 ? 's' : ''}.
         </div>
+
+        <div id="alertsLive" class="visually-hidden" role="status" aria-live="polite"></div>
 
         <div class="stats-bar">
             <div class="stat-box"><div class="label">Uptime</div><div class="value" id="uptime">${safeUptime}</div></div>
@@ -112,20 +122,20 @@ ${EDGE_CSS}
             <div class="percentile-item"><div class="label">P99</div><div class="value" id="p99">0ms</div></div>
         </div>
 
-        <div class="metric-row">
-            <div class="metric-info"><div class="metric-label">Response</div><div class="metric-value"><span id="rtVal">0</span><span class="metric-unit">ms</span></div></div>
-            <div class="chart-container"><canvas id="rtChart"></canvas></div>
+                <div class="range-select" id="rangeSelect" role="group" aria-label="Chart time range" hidden></div>
+        <div class="metric-row">     <div class="metric-info"><div class="metric-label">Response</div><div class="metric-value"><span id="rtVal">0</span><span class="metric-unit">ms</span></div></div>
+            <div class="chart-container"><canvas id="rtChart" role="img" aria-label="Response time over time"></canvas></div>
         </div>
         <div class="metric-row">
             <div class="metric-info"><div class="metric-label">RPS</div><div class="metric-value" id="rpsVal">0</div></div>
-            <div class="chart-container"><canvas id="rpsChart"></canvas></div>
+            <div class="chart-container"><canvas id="rpsChart" role="img" aria-label="Requests per second over time"></canvas></div>
         </div>
         <div class="metric-row">
             <div class="metric-info"><div class="metric-label">Error Rate</div><div class="metric-value"><span id="errRateVal">0</span><span class="metric-unit">%</span></div></div>
-            <div class="chart-container"><canvas id="errChart"></canvas></div>
+            <div class="chart-container"><canvas id="errChart" role="img" aria-label="Error rate over time"></canvas></div>
         </div>
 
-        <div class="section-title">Route Analytics</div>
+        <h2 class="section-title">Route Analytics</h2>
         <div class="routes-grid">
             <div class="route-section">
                 <h3>🔥 Top Routes</h3>
@@ -141,7 +151,7 @@ ${EDGE_CSS}
             </div>
         </div>
 
-        <div class="section-title">HTTP Status Codes</div>
+        <h2 class="section-title">HTTP Status Codes</h2>
         <div class="status-codes">
             <div class="status-code-box"><div class="code">2xx</div><div class="count s2xx" id="s2xx">0</div></div>
             <div class="status-code-box"><div class="code">3xx</div><div class="count s3xx" id="s3xx">0</div></div>
@@ -150,19 +160,19 @@ ${EDGE_CSS}
             <div class="status-code-box"><div class="code">Rate Limited</div><div class="count" id="rateLimited">0</div></div>
         </div>
 
-        <div class="section-title">Recent Errors</div>
+        <h2 class="section-title">Recent Errors</h2>
         <div class="errors-panel" id="errorsPanel">
             <div style="color: var(--text-muted); font-size: 12px;">No errors recorded</div>
         </div>
 
-        <div class="section-title">Health Checks</div>
+        <h2 class="section-title">Health Checks</h2>
         <div class="health-grid" id="healthList">
             <div class="health-empty">Loading…</div>
         </div>
-    </div>
+    </main>
 
     ${inlineScriptOpen(nonce)}
-${clientScript(inlineCharts, pollingInterval)}
+${clientScript(inlineCharts, pollingInterval, { maxRoutes, maxRecentErrors, retentionSeconds })}
     </script>
 </body>
 </html>`;

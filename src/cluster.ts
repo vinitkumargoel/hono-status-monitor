@@ -52,7 +52,8 @@ export function getWorkerId(): number {
  */
 export function sendMetricsToMaster(
     metrics: Partial<MetricsSnapshot>,
-    charts: ChartData
+    charts: ChartData,
+    delta = false
 ): void {
     if (!process.send) return;
 
@@ -61,7 +62,8 @@ export function sendMetricsToMaster(
         workerId: getWorkerId(),
         pid: process.pid,
         metrics,
-        charts
+        charts,
+        ...(delta ? { delta: true } : {})
     };
 
     try {
@@ -130,7 +132,7 @@ interface WorkerMetricsStore {
 /**
  * Create a cluster aggregator for the master process
  */
-export function createClusterAggregator(options: { maxRoutes?: number } = {}) {
+export function createClusterAggregator(options: { maxRoutes?: number; retentionSeconds?: number } = {}) {
     const workerMetrics: WorkerMetricsStore = {};
     const WORKER_TIMEOUT_MS = 10000; // Consider worker dead after 10s no update
     // Match the single-instance route-list cap (config.maxRoutes) so aggregated
@@ -140,12 +142,34 @@ export function createClusterAggregator(options: { maxRoutes?: number } = {}) {
     /**
      * Update metrics from a worker
      */
+    const retentionMs = (options.retentionSeconds ?? 60) * 1000;
+
+    /** Append delta points to a stored series and trim it to the retention window. */
+    function appendSeries(stored: MetricDataPoint[] | undefined, fresh: MetricDataPoint[]): MetricDataPoint[] {
+        const base = stored ?? [];
+        const lastTs = base.length ? base[base.length - 1].timestamp : -Infinity;
+        const merged = base.concat(fresh.filter((p) => p.timestamp > lastTs));
+        const newest = merged.length ? merged[merged.length - 1].timestamp : 0;
+        const cutoff = newest - retentionMs;
+        let start = 0;
+        while (start < merged.length && merged[start].timestamp < cutoff) start++;
+        return start ? merged.slice(start) : merged;
+    }
+
     function updateWorkerMetrics(message: WorkerMetricsMessage): void {
         if (!isWorkerMetricsMessage(message)) return;
+        const previous = workerMetrics[message.workerId];
+        let charts = message.charts;
+        if (message.delta && previous && previous.pid === message.pid) {
+            charts = { ...previous.charts };
+            for (const key of Object.keys(message.charts) as (keyof ChartData)[]) {
+                charts[key] = appendSeries(previous.charts[key], message.charts[key]);
+            }
+        }
         workerMetrics[message.workerId] = {
             pid: message.pid,
             metrics: message.metrics,
-            charts: message.charts,
+            charts,
             lastUpdate: Date.now()
         };
     }

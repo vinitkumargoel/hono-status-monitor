@@ -8,10 +8,10 @@
 import { build } from 'esbuild';
 import { gzipSync } from 'node:zlib';
 
-/** Minified bytes: 1.1.1 sizes plus ~8% headroom. */
+/** Minified bytes: 1.2.0 sizes plus ~7% headroom. */
 const BUDGETS = [
-    { entry: 'dist/index.js', label: 'main', max: 62_000 },
-    { entry: 'dist/index-edge.js', label: 'edge', max: 42_000 }
+    { entry: 'dist/index.js', label: 'main', max: 72_000 },
+    { entry: 'dist/index-edge.js', label: 'edge', max: 51_000 }
 ];
 
 let failed = false;
