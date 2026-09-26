@@ -43,7 +43,8 @@ export interface StatusMonitorConfig {
     /**
      * Give up on a health check after this many milliseconds and report it as
      * disconnected, so one hung dependency can't stall `/health` or the
-     * dashboard (default: 5000).
+     * dashboard. `0` disables the timeout (default: 0 — no timeout; this
+     * becomes 5000 in 2.0).
      */
     healthCheckTimeout?: number;
     /** Custom path normalization function */
@@ -72,12 +73,13 @@ export interface StatusMonitorConfig {
      */
     inlineCharts?: boolean;
     /**
-     * Send hardening headers with the dashboard: a nonce-based
-     * Content-Security-Policy (scripts limited to the dashboard's own inline
-     * script and the configured Chart.js origin), `frame-ancestors 'self'`,
-     * `X-Content-Type-Options: nosniff` and `Referrer-Policy: no-referrer`.
-     * Set to `false` if you embed the dashboard in a cross-origin iframe or
-     * apply your own policy (default: true).
+     * Send a nonce-based Content-Security-Policy with the dashboard (scripts
+     * limited to its own inline script and the configured Chart.js origin) and
+     * restrict framing to the same origin (`frame-ancestors 'self'`,
+     * `X-Frame-Options: SAMEORIGIN`). Off by default in 1.x because it blocks
+     * cross-origin embedding and proxy-injected scripts; it becomes the default
+     * in 2.0. `X-Content-Type-Options: nosniff`, `Referrer-Policy: no-referrer`
+     * and `Cache-Control: no-store` are always sent (default: false).
      */
     securityHeaders?: boolean;
     /**

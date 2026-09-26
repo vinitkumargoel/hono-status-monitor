@@ -8,6 +8,7 @@ import type { StatusMonitorConfig } from './types.js';
 import { detectPlatform } from './platform.js';
 import { createMonitor } from './monitor.js';
 import { createEdgeStatusMonitor } from './edge-status.js';
+import { randomBytes } from 'node:crypto';
 import { assembleStatusMonitor } from './status-factory.js';
 
 // Re-export types
@@ -112,6 +113,8 @@ function createNodeStatusMonitor(config: StatusMonitorConfig = {}) {
         },
         enableStream: true,
         isEdgeMode: false,
+        // node:crypto rather than Web Crypto, which Node 18 doesn't expose globally.
+        generateNonce: () => randomBytes(16).toString('base64'),
         initSocket: (_server?: any) => monitor.initSocket()
     });
 }

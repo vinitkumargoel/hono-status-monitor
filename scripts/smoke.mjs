@@ -25,7 +25,11 @@ console.log = ((log) => (...args) => {
 })(console.log);
 
 for (const [name, mod] of [['main', main], ['edge', edge]]) {
-    const monitor = mod.statusMonitor({ path: '/status' });
+    const monitor = mod.statusMonitor({
+        path: '/status',
+        securityHeaders: true,
+        healthChecks: { self: async () => ({ connected: true, latencyMs: 0 }) }
+    });
     const app = new Hono();
     app.use('*', monitor.middleware);
     app.route('/status', monitor.routes);

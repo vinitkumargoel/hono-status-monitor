@@ -91,9 +91,9 @@ export const BASE_CSS = `        :root {
         }
 
         .status-badge.stale { background: #fef3c7; color: #92400e; }
-        .status-badge.down { background: #fee2e2; color: #991b1b; }
         .dark .status-badge.stale { background: #422006; color: #fcd34d; }
-        .dark .status-badge.down { background: #7f1d1d; color: #fca5a5; }
+        .status-badge.down, .health-item .status.error { background: #fee2e2; color: #991b1b; }
+        .dark .status-badge.down, .dark .health-item .status.error { background: #7f1d1d; color: #fca5a5; }
 
         /* Health checks */
         .health-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
@@ -102,9 +102,7 @@ export const BASE_CSS = `        :root {
         .health-item .value { font-size: 16px; font-weight: 600; margin-top: 4px; }
         .health-item .status { display: inline-block; padding: 2px 8px; border-radius: 4px; font-size: 10px; font-weight: 600; margin-top: 4px; }
         .health-item .status.ok { background: #dcfce7; color: #166534; }
-        .health-item .status.error { background: #fee2e2; color: #991b1b; }
         .dark .health-item .status.ok { background: #14532d; color: #86efac; }
-        .dark .health-item .status.error { background: #7f1d1d; color: #fca5a5; }
         .health-empty { grid-column: 1 / -1; font-size: 12px; color: var(--text-muted); }
 
         /* Stats Bar */
@@ -384,8 +382,9 @@ export function clientScript(inlineCharts: boolean, pollingInterval: number): st
 
             function renderHealth(health) {
                 var el = document.getElementById('healthList');
-                if (!el || !health || !health.checks) return;
-                if (health.configured === false) {
+                if (!el) return;
+                // The server omits the health field entirely when no check is configured.
+                if (!health || !health.checks || health.configured === false) {
                     el.innerHTML = '<div class="health-empty">No health checks configured</div>';
                     return;
                 }
@@ -472,6 +471,8 @@ export function clientScript(inlineCharts: boolean, pollingInterval: number): st
 
             var INTERVAL = ${pollingInterval};
             var MAX_BACKOFF = 30000;
+            // A request that never answers must not stall polling for good.
+            var REQUEST_TIMEOUT = Math.max(10000, INTERVAL * 2);
             var failures = 0, lastOk = 0, timer = null, inFlight = false;
             var basePath = window.location.pathname.endsWith('/') ? window.location.pathname : window.location.pathname + '/';
 
@@ -486,7 +487,9 @@ export function clientScript(inlineCharts: boolean, pollingInterval: number): st
             function fetchMetrics() {
                 if (inFlight) return;
                 inFlight = true;
-                fetch(basePath + 'api/metrics', { cache: 'no-store', credentials: 'same-origin' })
+                var ctrl = typeof AbortController === 'function' ? new AbortController() : null;
+                var abortTimer = ctrl ? setTimeout(function() { ctrl.abort(); }, REQUEST_TIMEOUT) : null;
+                fetch(basePath + 'api/metrics', { cache: 'no-store', credentials: 'same-origin', signal: ctrl ? ctrl.signal : undefined })
                     .then(function(res) {
                         if (!res.ok) { var e = new Error('HTTP ' + res.status); e.status = res.status; throw e; }
                         return res.json();
@@ -510,13 +513,15 @@ export function clientScript(inlineCharts: boolean, pollingInterval: number): st
                         }
                     })
                     .then(function() {
+                        clearTimeout(abortTimer);
                         inFlight = false;
                         schedule(failures ? Math.min(INTERVAL * Math.pow(2, failures), MAX_BACKOFF) : INTERVAL);
                     });
             }
 
             document.addEventListener('visibilitychange', function() {
-                if (!document.hidden) { clearTimeout(timer); fetchMetrics(); }
+                clearTimeout(timer);
+                if (!document.hidden) fetchMetrics();
             });
 
             fetchMetrics();

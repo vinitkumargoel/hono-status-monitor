@@ -25,8 +25,8 @@ import {
 } from './cluster.js';
 import { calculatePercentiles, defaultNormalizePath, formatUptime, round } from './metrics-utils.js';
 import { detectPlatform } from './platform.js';
-import { createStatsCore, DEFAULT_HEALTH_CHECK, withTimeout } from './stats-core.js';
-import { sanitizeConfig } from './config.js';
+import { createStatsCore, DEFAULT_HEALTH_CHECK } from './stats-core.js';
+import { mergeConfig, sanitizeConfig } from './config.js';
 
 // Default configuration
 const DEFAULT_CONFIG: Required<StatusMonitorConfig> = {
@@ -47,7 +47,7 @@ const DEFAULT_CONFIG: Required<StatusMonitorConfig> = {
         eventLoopLag: 100
     },
     healthCheck: DEFAULT_HEALTH_CHECK,
-    healthCheckTimeout: 5000,
+    healthCheckTimeout: 0, // no timeout unless configured
     healthChecks: undefined as unknown as Record<string, () => Promise<HealthCheckResult>>,
     normalizePath: (path: string) => path,
     clusterMode: undefined as unknown as boolean, // Will be auto-detected
@@ -58,7 +58,7 @@ const DEFAULT_CONFIG: Required<StatusMonitorConfig> = {
     chartjsUrl: undefined as unknown as string,
     chartAdapterUrl: undefined as unknown as string,
     inlineCharts: false,
-    securityHeaders: true,
+    securityHeaders: false,
     store: undefined as unknown as StatusStore,
     instanceId: undefined as unknown as string,
     storeWriteInterval: 60000
@@ -70,13 +70,10 @@ const DEFAULT_CONFIG: Required<StatusMonitorConfig> = {
 export function createMonitor(userConfig: StatusMonitorConfig = {}) {
     const inClusterMode = userConfig.clusterMode ?? isClusterWorker();
 
-    const config: Required<StatusMonitorConfig> = sanitizeConfig({
-        ...DEFAULT_CONFIG,
-        ...userConfig,
-        alerts: { ...DEFAULT_CONFIG.alerts, ...userConfig.alerts },
+    const config: Required<StatusMonitorConfig> = sanitizeConfig(mergeConfig(DEFAULT_CONFIG, userConfig, {
         normalizePath: userConfig.normalizePath || defaultNormalizePath,
         clusterMode: inClusterMode
-    }, DEFAULT_CONFIG);
+    }), DEFAULT_CONFIG);
 
     const clusterAggregator: ClusterAggregator | null = inClusterMode
         ? createClusterAggregator({ maxRoutes: config.maxRoutes })
@@ -341,10 +338,11 @@ export function createMonitor(userConfig: StatusMonitorConfig = {}) {
     }
 
     async function getDatabaseStats(): Promise<DatabaseStats> {
+        // Shared with the health report (same call, same cache window).
+        const { result, elapsedMs } = await core.runCheck(config.healthCheck, 'healthCheck');
         try {
-            const start = performance.now();
-            const result = await withTimeout(config.healthCheck, config.healthCheckTimeout, 'healthCheck');
-            dbLatency = round(performance.now() - start);
+            if (!result) throw new Error('health check failed');
+            dbLatency = elapsedMs;
 
             // Pool figures are only meaningful if the health check surfaces them.
             const details = (result.details ?? {}) as Record<string, number>;
@@ -553,6 +551,7 @@ export function createMonitor(userConfig: StatusMonitorConfig = {}) {
         getMetricsSnapshot: getAggregatedSnapshot,
         getChartData: getAggregatedCharts,
         getHealthReport: core.getHealthReport,
+        healthConfigured: core.healthConfigured,
         resetStats,
         start,
         stop,

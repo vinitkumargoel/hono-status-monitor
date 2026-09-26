@@ -36,6 +36,13 @@ const HEALTH_CACHE_MS = 1000;
  */
 export const DEFAULT_HEALTH_CHECK = async (): Promise<HealthCheckResult> => ({ connected: true, latencyMs: 0 });
 
+/** Outcome of one health-check call: its result or error, and how long it took. */
+export interface CheckOutcome {
+    result?: HealthCheckResult;
+    error?: unknown;
+    elapsedMs: number;
+}
+
 /** Route lists derived from one pass over the tracked routes. */
 export interface RouteLists {
     topRoutes: RouteStats[];
@@ -46,8 +53,10 @@ export interface RouteLists {
 /**
  * Race `fn()` against a timeout. The timer is unref'd so a pending check never
  * keeps the process alive, and cleared as soon as either side settles.
+ * `ms <= 0` disables the timeout.
  */
 export async function withTimeout<T>(fn: () => Promise<T>, ms: number, label: string): Promise<T> {
+    if (!(ms > 0)) return fn();
     let timer: ReturnType<typeof setTimeout> | undefined;
     const timeout = new Promise<never>((_, reject) => {
         timer = setTimeout(() => reject(new Error(`${label} timed out after ${ms}ms`)), ms);
@@ -78,6 +87,11 @@ export interface StatsState {
     rateLimitTotal: number;
     /** Sum of `errors` across tracked routes, kept incrementally. */
     totalErrors: number;
+    /**
+     * Requests that were in flight when the counters were reset. Their
+     * completions are dropped so a reset really starts from zero.
+     */
+    staleCompletions: number;
     readonly routeStats: Map<string, RouteStats>;
     readonly recentErrors: ErrorEntry[];
 }
@@ -111,6 +125,7 @@ export function createStatsCore(
         rateLimitBlocked: 0,
         rateLimitTotal: 0,
         totalErrors: 0,
+        staleCompletions: 0,
         routeStats: new Map<string, RouteStats>(),
         recentErrors: []
     };
@@ -237,6 +252,10 @@ export function createStatsCore(
         durationMs: number,
         statusCode: number
     ): void {
+        if (state.staleCompletions > 0) {
+            state.staleCompletions--;
+            return;
+        }
         state.activeConnections = Math.max(0, state.activeConnections - 1);
 
         state.totalResponseTime += durationMs;
@@ -300,10 +319,11 @@ export function createStatsCore(
     /**
      * Run configured named health checks (falls back to the single healthCheck).
      * Concurrent callers share one in-flight run, and a result is reused for
-     * HEALTH_CACHE_MS, so health checks cost the same with one viewer or fifty.
+     * `maxAgeMs` (default HEALTH_CACHE_MS), so health checks cost the same with
+     * one viewer or fifty.
      */
-    function getHealthReport(): Promise<HealthReport> {
-        if (healthCache && Date.now() - healthCache.at < HEALTH_CACHE_MS) {
+    function getHealthReport(maxAgeMs: number = HEALTH_CACHE_MS): Promise<HealthReport> {
+        if (healthCache && Date.now() - healthCache.at < maxAgeMs) {
             return Promise.resolve(healthCache.report);
         }
         if (healthInFlight) return healthInFlight;
@@ -318,6 +338,28 @@ export function createStatsCore(
         return healthInFlight;
     }
 
+    const checkCache = new Map<() => Promise<HealthCheckResult>, { at: number; outcome: Promise<CheckOutcome> }>();
+
+    /**
+     * Call one health-check function, sharing the call between concurrent
+     * callers and reusing its outcome for HEALTH_CACHE_MS. Both the health
+     * report and the Node snapshot's `database` field go through here, so a
+     * single `healthCheck` runs once per window no matter who asks.
+     * Never rejects.
+     */
+    function runCheck(fn: () => Promise<HealthCheckResult>, label: string): Promise<CheckOutcome> {
+        const hit = checkCache.get(fn);
+        if (hit && Date.now() - hit.at < HEALTH_CACHE_MS) return hit.outcome;
+        const start = performance.now();
+        const elapsed = () => round(performance.now() - start);
+        const outcome = withTimeout(fn, config.healthCheckTimeout, label).then(
+            (result): CheckOutcome => ({ result, elapsedMs: elapsed() }),
+            (error): CheckOutcome => ({ error, elapsedMs: elapsed() })
+        );
+        checkCache.set(fn, { at: Date.now(), outcome });
+        return outcome;
+    }
+
     async function runHealthChecks(): Promise<HealthReport> {
         const checks = config.healthChecks
             ? Object.entries(config.healthChecks)
@@ -325,25 +367,24 @@ export function createStatsCore(
 
         const results: NamedHealthResult[] = await Promise.all(
             checks.map(async ([name, fn]) => {
-                try {
-                    const start = performance.now();
-                    const r = await withTimeout(fn, config.healthCheckTimeout, `health check "${name}"`);
+                const { result: r, error, elapsedMs } = await runCheck(fn, `health check "${name}"`);
+                if (r) {
                     return {
                         name: r.name || name,
                         connected: r.connected,
                         // `??` not `||`: a check legitimately reporting 0 ms must
                         // not be overwritten with our own measurement.
-                        latencyMs: r.latencyMs ?? round(performance.now() - start),
+                        latencyMs: r.latencyMs ?? elapsedMs,
                         details: r.details
                     };
-                } catch (err) {
-                    return {
-                        name,
-                        connected: false,
-                        latencyMs: 0,
-                        details: { error: err instanceof Error ? err.message : String(err) }
-                    };
                 }
+                return {
+                    name,
+                    connected: false,
+                    // How long we waited — for a timeout, that's the timeout.
+                    latencyMs: elapsedMs,
+                    details: { error: error instanceof Error ? error.message : String(error) }
+                };
             })
         );
 
@@ -361,6 +402,7 @@ export function createStatsCore(
      * own platform-specific histories.
      */
     function resetCounters(): void {
+        state.staleCompletions += state.activeConnections;
         state.requestCount = 0;
         state.lastRequestCount = 0;
         state.totalResponseTime = 0;
@@ -375,6 +417,7 @@ export function createStatsCore(
         state.rateLimitTotal = 0;
         state.totalErrors = 0;
         healthCache = null;
+        checkCache.clear();
     }
 
     return {
@@ -390,6 +433,8 @@ export function createStatsCore(
         trackRequestComplete,
         trackRateLimitEvent,
         getHealthReport,
+        runCheck,
+        healthConfigured,
         resetCounters
     };
 }

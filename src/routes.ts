@@ -19,7 +19,8 @@ interface CommonRouteMonitor {
     };
     getMetricsSnapshot: () => Promise<MetricsSnapshot>;
     getChartData: () => ChartData;
-    getHealthReport: () => Promise<HealthReport>;
+    getHealthReport: (maxAgeMs?: number) => Promise<HealthReport>;
+    healthConfigured?: boolean;
 }
 
 /**
@@ -106,7 +107,9 @@ export function registerCommonRoutes(
                         try {
                             const [snapshot, health] = await Promise.all([
                                 monitor.getMetricsSnapshot(),
-                                monitor.getHealthReport()
+                                monitor.healthConfigured
+                                    ? monitor.getHealthReport(Math.max(5000, interval))
+                                    : undefined
                             ]);
                             const charts = monitor.getChartData();
                             controller.enqueue(

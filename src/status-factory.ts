@@ -8,7 +8,7 @@ import { Hono } from 'hono';
 import type { MetricsSnapshot, ChartData, HealthReport, StatusMonitorConfig } from './types.js';
 import { createRequestTrackingMiddleware } from './request-tracking.js';
 import { createAuthGuard, registerCommonRoutes, NO_STORE } from './routes.js';
-import { dashboardSecurityHeaders, generateNonce } from './security.js';
+import { BASELINE_HEADERS, dashboardSecurityHeaders, generateNonce } from './security.js';
 import { DEFAULT_ADAPTER_URL, DEFAULT_CHARTJS_URL } from './chart-cdn.js';
 
 /**
@@ -22,12 +22,17 @@ export interface AssemblableMonitor {
     trackRateLimitEvent(blocked: boolean): void;
     getMetricsSnapshot(): Promise<MetricsSnapshot>;
     getChartData(): ChartData;
-    getHealthReport(): Promise<HealthReport>;
+    getHealthReport(maxAgeMs?: number): Promise<HealthReport>;
+    /** Whether any health check was configured (vs. the built-in placeholder). */
+    healthConfigured: boolean;
     resetStats(): void;
     start(): void;
     stop(): void;
     formatUptime(seconds: number): string;
 }
+
+/** Minimum age of the health data sent with dashboard polls. */
+const DASHBOARD_HEALTH_MAX_AGE_MS = 5000;
 
 export interface AssembleOptions<
     M extends AssemblableMonitor,
@@ -53,6 +58,8 @@ export interface AssembleOptions<
      * Generic so each caller's exact signature/return type reaches the handle.
      */
     initSocket: I;
+    /** CSP nonce source; defaults to Web Crypto. */
+    generateNonce?: () => string;
 }
 
 /**
@@ -81,22 +88,29 @@ export function assembleStatusMonitor<
         ? []
         : [cfg.chartjsUrl ?? DEFAULT_CHARTJS_URL, cfg.chartAdapterUrl ?? DEFAULT_ADAPTER_URL];
 
+    const makeNonce = options.generateNonce ?? generateNonce;
+
     // Dashboard page
     routes.get('/', async (c) => {
         const snapshot = await monitor.getMetricsSnapshot();
-        const nonce = generateNonce();
+        const nonce = makeNonce();
         const html = await options.renderDashboard(monitor, snapshot, { nonce });
-        const headers = cfg.securityHeaders === false
-            ? NO_STORE
-            : { ...NO_STORE, ...dashboardSecurityHeaders(nonce, scriptUrls) };
-        return c.html(html, 200, headers);
+        const headers = cfg.securityHeaders
+            ? dashboardSecurityHeaders(nonce, scriptUrls, c.req.url)
+            : BASELINE_HEADERS;
+        return c.html(html, 200, { ...headers });
     });
 
-    // JSON API endpoint
+    // Dashboard polls read health through a longer-lived cache than /health,
+    // so an open dashboard adds at most one round of checks per window.
+    const dashboardHealthAge = Math.max(DASHBOARD_HEALTH_MAX_AGE_MS, cfg.pollingInterval);
+
+    // JSON API endpoint. `health` is only included when checks are configured,
+    // so a monitor without checks does no extra work per poll.
     routes.get('/api/metrics', async (c) => {
         const [snapshot, health] = await Promise.all([
             monitor.getMetricsSnapshot(),
-            monitor.getHealthReport()
+            monitor.healthConfigured ? monitor.getHealthReport(dashboardHealthAge) : undefined
         ]);
         return c.json({ snapshot, charts: monitor.getChartData(), health }, 200, NO_STORE);
     });

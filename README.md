@@ -82,11 +82,11 @@ Roughly 38 KB minified (13 KB gzipped) for a Worker using the `/edge` entry, dow
 | Endpoint | Description |
 |---|---|
 | `GET /status` | Dashboard HTML |
-| `GET /status/api/metrics` | `{ snapshot, charts, health }` JSON |
+| `GET /status/api/metrics` | `{ snapshot, charts, health? }` JSON (`health` only when checks are configured) |
 | `GET /status/api/stream` | SSE stream of the same JSON (Node/Bun only) |
 | `GET /status/health` | `{ status, configured, uptime, timestamp, checks }` — **200** if all checks pass, **503** if degraded |
 
-All endpoints send `Cache-Control: no-store`.
+All endpoints send `Cache-Control: no-store`. `/health` results are shared between concurrent callers and reused for up to 1 s; the copy sent to dashboard polls for up to 5 s.
 | `GET /status/prometheus` | Prometheus/OpenMetrics text (disable via `prometheus: false`) |
 
 ## Configuration
@@ -108,7 +108,7 @@ statusMonitor({
     mongo: async () => ({ connected: mongoose.connection.readyState === 1, latencyMs: 2 }),
     redis: async () => ({ connected: await redis.ping() === 'PONG', latencyMs: 1 }),
   },
-  healthCheckTimeout: 3000,     // a hung check reports "down" instead of stalling /health
+  healthCheckTimeout: 3000,     // a hung check reports "down" instead of stalling /health (off by default)
 });
 ```
 
@@ -118,8 +118,8 @@ statusMonitor({
 |---|---|---|---|---|
 | `path` | `string` | `'/status'` | `'/status'` | Where you mount `routes`. Requests under it aren't counted as traffic. |
 | `title` | `string` | `'Server Status'` | `'Server Status'` | Dashboard heading and `<title>`. |
-| `pollingInterval` | `number` (ms) | `1000` | `5000` | Dashboard refresh; also the SSE push interval. Minimum 250. |
-| `updateInterval` | `number` (ms) | `1000` | `5000` | Metrics sampling. On edge, history rolls forward on requests at this cadence. Minimum 100. |
+| `pollingInterval` | `number` (ms) | `1000` | `5000` | Dashboard refresh; also the SSE push interval (at least 250). |
+| `updateInterval` | `number` (ms) | `1000` | `5000` | Metrics sampling. On edge, history rolls forward on requests at this cadence. |
 | `retentionSeconds` | `number` | `60` | `60` | Chart history window. |
 | `maxRecentErrors` | `number` | `10` | `10` | Errors kept in memory. |
 | `maxRoutes` | `number` | `10` | `10` | Length of the top / slowest / error route lists. |
@@ -129,20 +129,20 @@ statusMonitor({
 | `authorize` | `(c) => boolean \| Promise<boolean>` | – | – | Guards every status route; falsy or throwing → 401. |
 | `healthCheck` | `() => Promise<HealthCheckResult>` | – | – | Single check, reported as `database`. Its `details.poolSize` / `availableConnections` feed the snapshot's `database` field. |
 | `healthChecks` | `Record<string, () => Promise<HealthCheckResult>>` | – | – | Named checks, run in parallel. Takes precedence over `healthCheck` for `/health`. |
-| `healthCheckTimeout` | `number` (ms) | `5000` | `5000` | Per-check timeout. |
+| `healthCheckTimeout` | `number` (ms) | `0` (none) | `0` (none) | Per-check timeout; a timed-out check reports down. Becomes 5000 in 2.0. |
 | `normalizePath` | `(path) => string` | see below | same | Groups paths into routes. |
 | `prometheus` | `boolean` | `true` | `true` | Expose `/prometheus`. |
 | `prometheusPrefix` | `string` | `'hono'` | `'hono'` | Metric name prefix. |
 | `chartjsUrl` / `chartAdapterUrl` | `string` | jsDelivr, pinned + SRI | same | Self-host Chart.js (a relative URL is allowed by the CSP as `'self'`). |
 | `inlineCharts` | `boolean` | `false` | `false` | Built-in renderer, no external scripts at all. |
-| `securityHeaders` | `boolean` | `true` | `true` | CSP, anti-framing and nosniff headers on the dashboard (see [Security](#security)). |
+| `securityHeaders` | `boolean` | `false` | `false` | Nonce CSP + same-origin framing on the dashboard (see [Security](#security)). Becomes the default in 2.0. |
 | `clusterMode` | `boolean` | auto-detected | – | Aggregate PM2 / `node:cluster` workers. |
 | `store` | `StatusStore` | – | – | KV-shaped store for aggregating edge isolates (see below). No-op on Node. |
 | `instanceId` | `string` | – | random | Stable id for this isolate in `store`. |
 | `storeWriteInterval` | `number` (ms) | – | `60000` | How often an isolate writes to `store`. |
 | `socketPath` | `string` | – | – | **Deprecated**, ignored. |
 
-Numeric options below their minimum, or not finite, are clamped (with a console warning) rather than passed through.
+Numeric options that can't work (zero or negative intervals and caps, `NaN`, non-numeric strings) fall back to their default with a console warning. `undefined` means "use the default", and numeric strings such as `'120'` are accepted.
 
 **Default path normalization** collapses UUIDs to `:uuid`, 24-hex ObjectIds and all-digit segments to `:id`, then **keeps the first three path segments** — `/api/v1/users/42/posts` is tracked as `/api/v1/users`. Pass `normalizePath` to change that; you can build on the default:
 
@@ -240,7 +240,9 @@ app.route('/status', monitor.routes);
 
 Route paths are HTML-escaped before rendering, so hostile request paths can't inject scripts into the dashboard.
 
-**Headers.** The dashboard page is served with a per-response nonce-based `Content-Security-Policy` (scripts limited to its own inline script and the Chart.js origin), `frame-ancestors 'self'` / `X-Frame-Options: SAMEORIGIN`, `X-Content-Type-Options: nosniff` and `Referrer-Policy: no-referrer`. The default Chart.js scripts carry Subresource Integrity hashes, and if the CDN is unreachable the dashboard falls back to its built-in renderer. If you embed the dashboard in a cross-origin iframe or set your own CSP, pass `securityHeaders: false`.
+**Headers.** Every status response sends `Cache-Control: no-store`, and the dashboard also sends `X-Content-Type-Options: nosniff` and `Referrer-Policy: no-referrer`. The default Chart.js scripts carry Subresource Integrity hashes, and if the CDN is unreachable the dashboard falls back to its built-in renderer.
+
+Set `securityHeaders: true` to add a per-response nonce-based `Content-Security-Policy` (scripts limited to the dashboard's own inline script and the Chart.js origin) and same-origin framing (`frame-ancestors 'self'`, `X-Frame-Options: SAMEORIGIN`). It's off by default in 1.x because it blocks embedding the dashboard in a cross-origin iframe (Grafana, Backstage…) and scripts injected by proxies; it becomes the default in 2.0. If a custom `chartjsUrl` can't be expressed as a CSP source, the CSP is omitted rather than sent in a form that would block it.
 
 The status surface is **public by default** — anyone who can reach the mounted path gets the dashboard, `/api/metrics`, `/api/stream`, `/prometheus` and `/health`. Set `authorize` (or front it with your own auth) in any environment where that's not acceptable. Note that when `authorize` is set it also gates `/health`; if a load balancer or k8s liveness probe hits `/health` unauthenticated, either exempt that path in your own middleware or point the probe at an unguarded route.
 
