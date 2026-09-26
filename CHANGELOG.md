@@ -33,6 +33,10 @@ New, opt-in capabilities and a better dashboard. Nothing is removed, and every o
 - `/api/stream` computes one snapshot per tick for all connected clients instead of one per client, and its timer only runs while someone is connected.
 - Cluster workers send only new chart points over IPC (a full resend every 30 messages), instead of every series in full every second. Deltas are only sent once every peer worker has announced it understands them, so a 1.1.x worker running alongside during a rolling restart keeps receiving full charts, and a full resend goes out whenever a new or restarted peer appears.
 
+### Fixed
+
+- **Cluster aggregation works without `initSocket()`.** Workers only listened for their peers' metrics if the app called `monitor.initSocket()`, which the docs describe as a no-op, so most clustered dashboards showed a single worker. The listener is now registered when the monitor starts and removed by `stop()`; calling `initSocket()` as well is harmless.
+
 ### Behavior changes to be aware of
 
 - The tracking middleware now records a route when the request completes rather than when it starts, so in-flight requests no longer show up as zero-count routes.

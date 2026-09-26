@@ -466,7 +466,21 @@ export function createMonitor(userConfig: StatusMonitorConfig = {}) {
         };
     }
 
+    // Peer workers' metrics arrive over IPC (relayed by setupClusterPrimary).
+    // Registered by start() — before 1.2.0 only initSocket() did this, so a
+    // cluster whose code never called initSocket() showed only its own worker.
+    let ipcListener: ((message: unknown) => void) | null = null;
+    function listenToPeers(): void {
+        if (ipcListener || !config.clusterMode || !clusterAggregator) return;
+        ipcListener = (message: unknown) => {
+            if (isWorkerMetricsMessage(message)) clusterAggregator.updateWorkerMetrics(message);
+        };
+        process.on('message', ipcListener);
+        logger.log('📊 Status monitor initialized (cluster mode - aggregating workers)');
+    }
+
     function start(): void {
+        listenToPeers();
         if (!metricsInterval) {
             lastLoopTime = Date.now();
             enableInstrumentation();
@@ -479,6 +493,10 @@ export function createMonitor(userConfig: StatusMonitorConfig = {}) {
     }
 
     function stop(): void {
+        if (ipcListener) {
+            process.off('message', ipcListener);
+            ipcListener = null;
+        }
         if (metricsInterval) {
             clearInterval(metricsInterval);
             metricsInterval = null;
@@ -509,15 +527,7 @@ export function createMonitor(userConfig: StatusMonitorConfig = {}) {
     function initSocket(): null {
         logger.log('📊 Status monitor using polling mode (no WebSocket)');
 
-        // Set up IPC message handler for cluster mode
-        if (config.clusterMode && clusterAggregator) {
-            process.on('message', (message: unknown) => {
-                if (isWorkerMetricsMessage(message)) {
-                    clusterAggregator.updateWorkerMetrics(message);
-                }
-            });
-            logger.log('📊 Status monitor initialized (cluster mode - aggregating workers)');
-        }
+        listenToPeers(); // Idempotent; start() already did this.
 
         return null;
     }

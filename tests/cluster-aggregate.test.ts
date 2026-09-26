@@ -148,3 +148,22 @@ describe('cluster process helpers', () => {
         expect(send.mock.calls[0][0]).toMatchObject({ type: 'worker-metrics', pid: process.pid, metrics: { rps: 1 }, deltaCapable: true });
     });
 });
+
+describe('cluster monitor wiring', () => {
+    it('receives peer metrics after start() without initSocket(), and stops listening on stop()', async () => {
+        const { createMonitor } = await import('../src/monitor');
+        const before = process.listenerCount('message');
+        const monitor = createMonitor({ clusterMode: true, logger: false });
+        monitor.start();
+        expect(process.listenerCount('message')).toBe(before + 1);
+        monitor.initSocket(); // idempotent: no second listener
+        expect(process.listenerCount('message')).toBe(before + 1);
+
+        process.emit('message' as never, { ...msg(7, { totalRequests: 5 }), deltaCapable: true } as never);
+        const snapshot = await monitor.getMetricsSnapshot();
+        expect(snapshot.workers?.map((w) => w.pid)).toContain(1007);
+
+        monitor.stop();
+        expect(process.listenerCount('message')).toBe(before);
+    });
+});
