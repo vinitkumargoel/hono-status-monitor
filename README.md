@@ -69,11 +69,11 @@ export default app;
 
 Edge exposes request metrics only (CPU/memory/heap/event-loop/load and the SSE stream are unavailable). Each isolate keeps its own counters.
 
-Since 1.1.0 the package also declares `workerd` and `edge-light` export conditions, so Wrangler, Vite and Vercel Edge resolve the bare `hono-status-monitor` specifier to the edge build automatically — importing the main entry in a Worker no longer drags in `os`/`perf_hooks`/`cluster`. The explicit `/edge` import still works and is the clearest way to state intent.
+The bare `hono-status-monitor` specifier still resolves to the main (Node) entry on every runtime, exactly as in 1.0.x — Workers using `nodejs_compat` that rely on it keep the same behavior. Import `/edge` to get the smaller, Node-free build.
 
 ### Bundle size
 
-Roughly 31 KB minified (10 KB gzipped) for a Worker, down from 73 KB in 1.0.x. The dashboard markup is loaded through a dynamic `import()`, so bundlers with code splitting turned on keep it out of the entry chunk — that drops the edge entry to about 13 KB.
+Roughly 31 KB minified (10 KB gzipped) for a Worker using the `/edge` entry, down from 73 KB in 1.0.x. The dashboard markup is loaded through a dynamic `import()`, so bundlers with code splitting turned on keep it out of the entry chunk — that drops the edge entry to about 13 KB.
 
 ## Endpoints
 
@@ -186,7 +186,6 @@ Internals were restructured to cut bundle size; the documented `statusMonitor()`
 
 - **`createMiddleware` moved** from `middleware.js` to `request-tracking.js`. It is still exported from the package root and still works; only a deep path import into `dist/middleware.js` would break, and the `exports` map already blocked those.
 - **The dashboard module split** into `dashboard-assets` (shared CSS + client script), `dashboard` (Node) and `dashboard-edge` (edge). `generateDashboard` and `generateEdgeDashboard` are still exported from the package root.
-- **`workerd` / `edge-light` export conditions** mean an edge bundler now resolves the bare specifier to the edge build. That build intentionally omits the Node-only APIs (`createMonitor`, `createClusterAggregator`, `generateDashboard`); referencing them in an edge build is now a build-time error rather than a runtime crash.
 - **Health-check latency on edge** is measured with `performance.now()` and reported to two decimals, matching Node. It was whole milliseconds before.
 - **Route eviction is now genuinely least-recently-used.** At `maxTrackedRoutes`, eviction previously compared a `lastAccess` timestamp with 1 ms granularity; under real traffic several routes share the same millisecond, so it fell back to scan order and could evict the *most* recently used route. It now tracks recency directly. A health check that returns `latencyMs: 0` is also reported as `0` instead of being replaced by the measured time.
 

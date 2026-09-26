@@ -111,7 +111,7 @@ function createNodeStatusMonitor(config: StatusMonitorConfig = {}) {
         },
         enableStream: true,
         isEdgeMode: false,
-        initSocket: (_server?: unknown) => monitor.initSocket()
+        initSocket: (_server?: any) => monitor.initSocket()
     });
 }
 

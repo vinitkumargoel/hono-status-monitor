@@ -28,6 +28,6 @@ export function createEdgeStatusMonitor(config: StatusMonitorConfig = {}) {
         // No SSE stream on edge isolates.
         enableStream: false,
         isEdgeMode: true,
-        initSocket: () => null
+        initSocket: (): null => null
     });
 }

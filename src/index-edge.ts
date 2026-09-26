@@ -17,9 +17,8 @@ export { mergeSnapshots, generateInstanceId } from './edge-store.js';
 export { createMiddleware, createRequestTrackingMiddleware } from './request-tracking.js';
 
 // Platform helpers are dependency-free and behave the same on every runtime, so
-// they are exported here too. This keeps the edge entry a drop-in replacement
-// for the main entry under the `workerd` / `edge-light` export conditions —
-// only the genuinely Node-only APIs (createMonitor, cluster helpers,
+// they are exported here too. This keeps the edge entry close to a drop-in
+// replacement for the main entry — only the genuinely Node-only APIs (createMonitor, cluster helpers,
 // generateDashboard) are absent.
 export {
     detectPlatform,

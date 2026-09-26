@@ -7,14 +7,6 @@
     "type": "module",
     "exports": {
         ".": {
-            "workerd": {
-                "types": "./dist/index-edge.d.ts",
-                "default": "./dist/index-edge.js"
-            },
-            "edge-light": {
-                "types": "./dist/index-edge.d.ts",
-                "default": "./dist/index-edge.js"
-            },
             "types": "./dist/index.d.ts",
             "import": "./dist/index.js",
             "default": "./dist/index.js"

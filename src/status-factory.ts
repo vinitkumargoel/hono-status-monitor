@@ -27,7 +27,10 @@ export interface AssemblableMonitor {
     formatUptime(seconds: number): string;
 }
 
-export interface AssembleOptions<M extends AssemblableMonitor> {
+export interface AssembleOptions<
+    M extends AssemblableMonitor,
+    I extends (server?: any) => unknown = (server?: any) => unknown
+> {
     /**
      * Produce the dashboard HTML. Called per request, and awaited, so callers
      * can lazily `import()` the dashboard module instead of pulling ~27 KB of
@@ -41,8 +44,9 @@ export interface AssembleOptions<M extends AssemblableMonitor> {
     /**
      * Backwards-compatible socket initializer. The argument is accepted and
      * ignored — kept so existing `monitor.initSocket(server)` calls still type.
+     * Generic so each caller's exact signature/return type reaches the handle.
      */
-    initSocket: (server?: unknown) => unknown;
+    initSocket: I;
 }
 
 /**
@@ -51,9 +55,12 @@ export interface AssembleOptions<M extends AssemblableMonitor> {
  * Route surface: `GET /` (dashboard), `GET /api/metrics`, plus `/health`,
  * `/prometheus` and optionally `/api/stream` via `registerCommonRoutes`.
  */
-export function assembleStatusMonitor<M extends AssemblableMonitor>(
+export function assembleStatusMonitor<
+    M extends AssemblableMonitor,
+    I extends (server?: any) => unknown
+>(
     monitor: M,
-    options: AssembleOptions<M>
+    options: AssembleOptions<M, I>
 ) {
     const middleware = createRequestTrackingMiddleware(monitor);
     const routes = new Hono();

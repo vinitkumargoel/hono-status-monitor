@@ -126,7 +126,7 @@ users this work targets. The bytes were incidental.
 |---|---|
 | 1 | Build step minifies the CSS/JS embedded in template literals (`scripts/minify-assets.mjs`) |
 | 2 | Shared `BASE_CSS` + one null-safe client script; per-variant CSS only |
-| 3 | `workerd` / `edge-light` export conditions resolve edge bundlers to the edge build |
+| 3 | ~~`workerd` / `edge-light` export conditions~~ — reverted before merge (see below) |
 | 4 | Dashboard loaded via dynamic `import()` so splitting bundlers drop it from the entry chunk |
 | 5 | Deferred — dashboard-as-opt-in-subpath is a breaking change, left for v2 |
 | 6 | Stopped emitting and publishing source maps |
@@ -225,10 +225,14 @@ differential testing against the v1.0.9 build rather than by inspection:
   emitting a second chunk, so there is no cross-chunk import at runtime on the
   default path. Zero `node:os` / `node:cluster` / `node:perf_hooks` references
   in the output.
-- **`workerd` export condition** — importing the *bare* `hono-status-monitor`
-  specifier from a Worker produces a byte-identical bundle to the explicit
-  `/edge` import (178.06 KiB upload, 44.07 KiB gzip, Hono included). The
-  condition resolves as documented.
+- **`workerd` export condition — reverted.** It worked as designed (bare import
+  produced the same bundle as `/edge`), but it silently changed behavior for
+  existing users: Workers on `nodejs_compat` expose `process.versions.node`, so
+  the bare import previously gave them the full Node monitor (system charts,
+  `/api/stream`, `createMonitor`/`generateDashboard`/cluster exports). Switching
+  them to the edge build in a minor release would drop routes and break named
+  imports. The explicit `/edge` import remains the opt-in; the condition can
+  return in a major version.
 - 58/58 unit tests green.
 
 ### Known gap
