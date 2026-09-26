@@ -2,6 +2,7 @@
     "extends": "./tsconfig.json",
     "compilerOptions": {
         "noEmit": true,
+        "noUncheckedIndexedAccess": false,
         "rootDir": ".",
         "types": [
             "node",
@@ -13,6 +14,12 @@
             ],
             "hono-status-monitor/edge": [
                 "./src/index-edge.ts"
+            ],
+            "hono-status-monitor/otel": [
+                "./src/otel.ts"
+            ],
+            "hono-status-monitor/durable-object": [
+                "./src/durable-object-store.ts"
             ]
         }
     },

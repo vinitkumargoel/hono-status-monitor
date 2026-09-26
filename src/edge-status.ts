@@ -3,11 +3,11 @@
 // Edge-compatible entry point. Route/handle assembly lives in status-factory.
 // =============================================================================
 
-import type { StatusMonitorConfig } from './types.js';
-import { createEdgeMonitor } from './monitor-edge.js';
+import type { StatusMonitor, StatusMonitorConfig } from './types.js';
+import { createEdgeMonitor, type EdgeMonitor } from './monitor-edge.js';
 import { assembleStatusMonitor } from './status-factory.js';
 
-export function createEdgeStatusMonitor(config: StatusMonitorConfig = {}) {
+export function createEdgeStatusMonitor(config: StatusMonitorConfig = {}): StatusMonitor<EdgeMonitor, true> {
     const monitor = createEdgeMonitor(config);
 
     return assembleStatusMonitor(monitor, {
@@ -32,7 +32,6 @@ export function createEdgeStatusMonitor(config: StatusMonitorConfig = {}) {
         },
         // No SSE stream on edge isolates.
         enableStream: false,
-        isEdgeMode: true,
-        initSocket: (): null => null
+        isEdgeMode: true as const
     });
 }

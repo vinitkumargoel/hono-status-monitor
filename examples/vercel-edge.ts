@@ -17,7 +17,10 @@ const monitor = statusMonitor({
     // The full request path, basePath included, so the dashboard's own polls
     // are not counted as traffic.
     path: '/api/status',
-    groupBy: 'route'
+    groupBy: 'route',
+    // The status routes answer 403 until authorize or publicAccess is set.
+    // Use timingSafeEqual from 'hono/utils/buffer' for production comparisons.
+    authorize: (c) => !!process.env.STATUS_TOKEN && c.req.header('x-token') === process.env.STATUS_TOKEN
 });
 
 app.use('*', monitor.middleware);

@@ -6,7 +6,7 @@ Security issues: don't open a public issue. See [SECURITY.md](./SECURITY.md).
 
 ## Setup
 
-Requires Node 20 or later for development (the package itself supports Node 18+).
+Requires Node 20 or later, for development and for the package itself.
 
 ```bash
 git clone https://github.com/vinitkumargoel/hono-status-monitor.git
@@ -29,7 +29,7 @@ npm ci
 | `npm run check` | All of the above in order: typecheck, lint, test:coverage, build, smoke, size, check:package |
 | `npm run smoke:workerd` | Runs the `/edge` build inside workerd via Miniflare with a KV namespace |
 
-Run `npm run check` before opening a PR; CI runs the same steps on Node 20, 22 and 24, then smoke-tests the packed tarball on Node 18, Node 24, Bun and Deno, runs the tests against `hono@4.0.0`, and runs the workerd smoke test.
+Run `npm run check` before opening a PR; CI runs the same steps on Node 20, 22 and 24, then smoke-tests the packed tarball on Node 20, Node 24, Bun and Deno, runs the tests against `hono@4.0.0`, and runs the workerd smoke test.
 
 `smoke:workerd` needs Miniflare, which isn't a dependency:
 
@@ -79,7 +79,7 @@ docs/                  Cookbook and troubleshooting
 - **Keep `/edge` free of `node:` imports.** Everything reachable from `src/index-edge.ts` must run on Workers without `nodejs_compat`. Node-only code goes in `monitor.ts`, `cluster.ts` or `index.ts`. The workerd smoke test fails if the edge bundle imports a `node:` builtin.
 - **Dashboard client script:** the browser script in `dashboard-assets.ts` is ES5 inside a template literal (no `let`/`const`, arrow functions or template literals inside it; `${...}` is server-side interpolation). It's opaque to TypeScript and bundlers, so `scripts/minify-assets.mjs` minifies it and the CSS in `dist/` after `tsc`, and checks that the element IDs the script drives are still present. Keep it working without Chart.js (the inline renderer is the fallback).
 - **Config options** are documented once, in the JSDoc in `src/types.ts`; update the README options table and `docs/` when you add or change one. New numeric options need a rule in `config.ts`.
-- **No breaking changes in 1.x.** New behavior that could affect existing deployments is opt-in.
+- **No breaking changes within a major version.** New behavior that could affect existing deployments is opt-in until the next major, and breaking changes go in the migration guide (`docs/migrating-to-2.md` for 2.0).
 
 ## Releasing
 

@@ -2,7 +2,7 @@
 // HONO STATUS MONITOR - SHARED METRICS UTILITIES
 // =============================================================================
 
-import type { PercentileData } from './types.js';
+import type { MetricDataPoint, PercentileData } from './types.js';
 
 export function round(value: number, precision = 2): number {
     const multiplier = 10 ** precision;
@@ -29,7 +29,7 @@ export function calculatePercentiles(samples: number[]): PercentileData {
     const sorted = [...samples].sort((a, b) => a - b);
     const percentile = (value: number) => {
         const index = Math.max(0, Math.ceil(value * sorted.length) - 1);
-        return round(sorted[Math.min(index, sorted.length - 1)]);
+        return round(sorted[Math.min(index, sorted.length - 1)] ?? 0);
     };
 
     return {
@@ -53,4 +53,9 @@ export function formatUptime(seconds: number): string {
     parts.push(`${secs}s`);
 
     return parts.join(' ');
+}
+
+/** The newest value in a chart series, or 0 when it's empty. */
+export function latest(series: MetricDataPoint[]): number {
+    return series.at(-1)?.value ?? 0;
 }

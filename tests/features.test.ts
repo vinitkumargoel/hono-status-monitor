@@ -29,8 +29,7 @@ describe('dashboard XSS safety', () => {
         const html = generateDashboard({
             title: '</title><script>alert(1)</script>',
             hostname: '<b>host</b>',
-            uptime: '1s',
-            socketPath: '/x'
+            uptime: '1s'
         });
         expect(html).not.toContain('<script>alert(1)</script>');
         expect(html).toContain('&lt;script&gt;alert(1)&lt;/script&gt;');
@@ -38,13 +37,13 @@ describe('dashboard XSS safety', () => {
     });
 
     it('ships a client-side escaper for route/error rendering', () => {
-        const html = generateDashboard({ title: 't', hostname: 'h', uptime: '1s', socketPath: '/x' });
+        const html = generateDashboard({ title: 't', hostname: 'h', uptime: '1s' });
         expect(html).toContain('function esc(');
         expect(html).toContain('esc(r.path)');
     });
 
     it('honors a custom polling interval', () => {
-        const html = generateDashboard({ title: 't', hostname: 'h', uptime: '1s', socketPath: '/x', pollingInterval: 4000 });
+        const html = generateDashboard({ title: 't', hostname: 'h', uptime: '1s', pollingInterval: 4000 });
         expect(html).toContain('var INTERVAL = 4000;');
     });
 });

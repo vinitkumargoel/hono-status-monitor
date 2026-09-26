@@ -1,8 +1,9 @@
 // =============================================================================
 // SMOKE TEST - THE /edge BUILD INSIDE THE REAL CLOUDFLARE WORKERS RUNTIME
 //
-// Bundles a Worker from dist/index-edge.js (as Wrangler would, without
-// nodejs_compat) and runs it in workerd through Miniflare, with a KV namespace
+// Bundles a Worker that imports the package by its main name, with the
+// conditions Wrangler uses (so the `workerd` export condition must pick the
+// edge build), and runs it in workerd through Miniflare, with a KV namespace
 // as the cross-isolate store. Needs `miniflare`, which isn't a dependency:
 //   npm install --no-save miniflare@4 && npm run build && node scripts/workerd-smoke.mjs
 // =============================================================================
@@ -12,12 +13,12 @@ import { Miniflare } from 'miniflare';
 
 const worker = `
 import { Hono } from 'hono';
-import { statusMonitor } from './dist/index-edge.js';
+import { statusMonitor } from 'hono-status-monitor';
 
 let monitor;
 export default {
     fetch(req, env, ctx) {
-        monitor ??= statusMonitor({ store: env.STATUS_KV, storeWriteInterval: 1000, groupBy: 'route', prometheusHistogram: true, logger: false,
+        monitor ??= statusMonitor({ publicAccess: true, store: env.STATUS_KV, storeWriteInterval: 1000, groupBy: 'route', prometheusHistogram: true, logger: false,
             healthChecks: { kv: async () => ({ connected: !!env.STATUS_KV, latencyMs: 0 }) } });
         const app = new Hono();
         app.use('*', monitor.middleware);

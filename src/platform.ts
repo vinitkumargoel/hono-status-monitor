@@ -6,50 +6,39 @@
 /**
  * Supported platform types
  */
-export type Platform = 'node' | 'bun' | 'cloudflare' | 'edge' | 'unknown';
+export type Platform = 'node' | 'bun' | 'deno' | 'cloudflare' | 'edge' | 'unknown';
 
 /**
- * Detect the current runtime platform
- * 
+ * Detect the current runtime platform.
+ *
+ * Runtimes that emulate Node (Bun, Deno, Workers with `nodejs_compat`) all
+ * expose `process.versions.node`, so the specific runtimes are checked first
+ * and Node last.
+ *
  * @returns The detected platform type
  */
 export function detectPlatform(): Platform {
-    // Check for Bun before Node.js because Bun exposes process.versions.node.
-    if (typeof process !== 'undefined' && 'bun' in process.versions) {
-        return 'bun';
-    }
-
-    // Check for Node.js
-    if (typeof process !== 'undefined' && process.versions?.node) {
-        return 'node';
-    }
-
     const g = globalThis as {
+        process?: { versions?: Record<string, string | undefined> };
         navigator?: { userAgent?: unknown };
         caches?: { default?: unknown };
         Deno?: unknown;
         EdgeRuntime?: unknown;
     };
+    const versions = g.process?.versions;
 
-    // Check for Cloudflare Workers (navigator.userAgent, then the caches.default API)
+    if (versions?.bun) return 'bun';
+    if (typeof g.Deno !== 'undefined') return 'deno';
+
+    // Cloudflare Workers: navigator.userAgent, then the caches.default API.
     const userAgent = g.navigator?.userAgent;
-    if (typeof userAgent === 'string' && userAgent.includes('Cloudflare-Workers')) {
-        return 'cloudflare';
-    }
-    if (typeof g.caches !== 'undefined' && typeof g.caches.default !== 'undefined') {
-        return 'cloudflare';
-    }
+    if (typeof userAgent === 'string' && userAgent.includes('Cloudflare-Workers')) return 'cloudflare';
+    if (typeof g.caches !== 'undefined' && typeof g.caches.default !== 'undefined') return 'cloudflare';
 
-    // Check for Deno
-    if (typeof g.Deno !== 'undefined') {
-        return 'edge';
-    }
+    // Vercel Edge and other runtimes that set the EdgeRuntime global.
+    if (typeof g.EdgeRuntime !== 'undefined') return 'edge';
 
-    // Generic edge runtime (Vercel Edge, etc.)
-    if (typeof g.EdgeRuntime !== 'undefined') {
-        return 'edge';
-    }
-
+    if (versions?.node) return 'node';
     return 'unknown';
 }
 
@@ -75,7 +64,15 @@ export function isCloudflareEnvironment(): boolean {
 }
 
 /**
- * Check if running in any edge environment (Cloudflare, Vercel Edge, etc.)
+ * Check if running in Deno
+ */
+export function isDenoEnvironment(): boolean {
+    return detectPlatform() === 'deno';
+}
+
+/**
+ * Check if running in an edge environment (Cloudflare, Vercel Edge, etc.).
+ * Deno is not counted as edge: it runs the full Node-compatible monitor.
  */
 export function isEdgeEnvironment(): boolean {
     const platform = detectPlatform();
@@ -89,17 +86,15 @@ export function getPlatformInfo(): {
     platform: Platform;
     hasOsModule: boolean;
     hasProcessModule: boolean;
-    hasWebSocketSupport: boolean;
     hasClusterSupport: boolean;
 } {
     const platform = detectPlatform();
-    const isNodeCompatible = platform === 'node' || platform === 'bun';
+    const isNodeCompatible = platform === 'node' || platform === 'bun' || platform === 'deno';
 
     return {
         platform,
         hasOsModule: isNodeCompatible,
         hasProcessModule: isNodeCompatible,
-        hasWebSocketSupport: isNodeCompatible,
         hasClusterSupport: platform === 'node'
     };
 }

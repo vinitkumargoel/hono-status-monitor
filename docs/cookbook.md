@@ -1,13 +1,17 @@
 # Cookbook
 
-Copy-pasteable setups for each runtime and for common deployment needs. All examples use version 1.2. The package is ESM-only.
+Copy-pasteable setups for each runtime and for common deployment needs. All examples use version 2.0 (coming from 1.x? see the [migration guide](./migrating-to-2.md)). The package is ESM-only.
 
 Two entries:
 
 | Entry | Use on | Metrics |
 |---|---|---|
-| `hono-status-monitor` | Node.js, Bun | System (CPU, memory, heap, load, event-loop lag, GC) + request metrics, SSE `/api/stream`, cluster helpers |
-| `hono-status-monitor/edge` | Cloudflare Workers, Deno, Vercel Edge | Request metrics only; no `node:` imports; no SSE stream |
+| `hono-status-monitor` | Node.js, Bun, Deno | System (CPU, memory, heap, load, event-loop lag, GC) + request metrics, SSE `/api/stream`, cluster helpers (Node) |
+| `hono-status-monitor/edge` | Cloudflare Workers, Vercel Edge | Request metrics only; no `node:` imports; no SSE stream |
+
+Under Wrangler and Vercel Edge, `hono-status-monitor` itself resolves to the edge build (`workerd` / `edge-light` export conditions), so either import works there.
+
+Two more subpaths: `hono-status-monitor/otel` ([OpenTelemetry bridge](./opentelemetry.md)) and `hono-status-monitor/durable-object` ([Durable Object store](./durable-object-store.md)).
 
 Every recipe mounts the same way:
 
@@ -17,6 +21,8 @@ app.route('/status', monitor.routes);   // must match config.path (default '/sta
 ```
 
 If you mount somewhere else, set `path` to the full request path of the mount (for example `path: '/admin/status'`). The middleware uses it to leave the dashboard's own requests out of the metrics.
+
+Every monitor needs `authorize` or `publicAccess`: without either, the status routes answer 403. The recipes below use `publicAccess: process.env.NODE_ENV !== 'production'` where auth isn't the point; see [Putting the dashboard behind auth](#putting-the-dashboard-behind-auth) for production.
 
 Contents:
 
@@ -49,6 +55,7 @@ const app = new Hono();
 
 const monitor = statusMonitor({
   title: 'My App',
+  publicAccess: process.env.NODE_ENV !== 'production', // or authorize, see below
   groupBy: 'route',                           // group by Hono route pattern: /users/:id
   ignorePaths: ['/favicon.ico', '/assets/*'], // not counted at all
 });
@@ -61,7 +68,7 @@ app.get('/users/:id', (c) => c.json({ id: c.req.param('id') }));
 
 const server = serve({ fetch: app.fetch, port: 3000 });
 
-// Optional: release the collector on shutdown.
+// Optional: release the collector on shutdown. (Collection started on the first request.)
 process.on('SIGTERM', () => {
   monitor.stop();
   server.close();
@@ -84,7 +91,7 @@ import { Hono } from 'hono';
 import { statusMonitor } from 'hono-status-monitor';
 
 const app = new Hono();
-const monitor = statusMonitor({ groupBy: 'route' });
+const monitor = statusMonitor({ groupBy: 'route', publicAccess: process.env.NODE_ENV !== 'production' });
 
 app.use('*', monitor.middleware);
 app.route('/status', monitor.routes);
@@ -97,7 +104,7 @@ Bun uses the main entry and gets the full system metrics.
 
 ## Cloudflare Workers
 
-Use the `/edge` entry. It has no `node:` imports, so `nodejs_compat` is not needed.
+Use the `/edge` entry. It has no `node:` imports, so `nodejs_compat` is not needed. (Under Wrangler, the bare `hono-status-monitor` import resolves to the same build.)
 
 Each isolate keeps its own counters. To see approximate fleet-wide numbers, pass a KV namespace as `store`: every isolate writes its snapshot at most once per `storeWriteInterval` (default 60000 ms, via `executionCtx.waitUntil` so the response isn't delayed), and the dashboard merges the snapshots it reads back. Peer snapshots are cached between reads, and at most `maxPeers` (default 50) are read per refresh.
 
@@ -169,17 +176,26 @@ What to expect with a store:
 - KV is eventually consistent, and each isolate writes at most once per `storeWriteInterval`. Expect fleet numbers to lag by about a minute. KV's minimum TTL is 60 s, so entries live at least that long; a stopped isolate's entry expires on its own.
 - Cost: one KV write per active isolate per `storeWriteInterval`, plus one `list` and up to `maxPeers` reads per dashboard refresh when the peer cache is cold. Raise `storeWriteInterval` or `pollingInterval` if that's too much.
 
-`store` accepts anything with `get` / `put` / `list` (see the exported `StatusStore` type), so a Durable Object stub or custom store also works.
+`store` accepts anything with `get` / `put` / `list` (see the exported `StatusStore` type). For strongly consistent, lag-free aggregation, use the built-in Durable Object store instead of KV:
+
+```ts
+import { durableObjectStore } from 'hono-status-monitor/durable-object';
+export { StatusStoreObject } from 'hono-status-monitor/durable-object';   // required in the main module
+
+statusMonitor({ authorize, store: durableObjectStore(env.STATUS_STORE), storeWriteInterval: 15_000 });
+```
+
+Bindings, migration and trade-offs: [Durable Object store](./durable-object-store.md).
 
 ## Deno
 
 ```ts
-// main.ts — deno run --allow-net --allow-env main.ts
+// main.ts — deno run --allow-net --allow-env --allow-sys main.ts
 import { Hono } from 'npm:hono';
-import { statusMonitor } from 'npm:hono-status-monitor/edge';
+import { statusMonitor } from 'npm:hono-status-monitor';
 
 const app = new Hono();
-const monitor = statusMonitor({ groupBy: 'route' });
+const monitor = statusMonitor({ groupBy: 'route', publicAccess: Deno.env.get('NODE_ENV') !== 'production' });
 
 app.use('*', monitor.middleware);
 app.route('/status', monitor.routes);
@@ -188,7 +204,7 @@ app.get('/', (c) => c.text('Hello from Deno'));
 Deno.serve({ port: 8000 }, app.fetch);
 ```
 
-The dashboard labels the runtime as Deno. Metrics are request-only, as on Workers.
+Deno uses the full monitor from the main entry: system metrics (CPU, memory, heap, event-loop lag) and the SSE stream, as on Node. Cluster helpers are Node-only. `npm:hono-status-monitor/edge` still works if you want the request-only build. On Deno Deploy, each isolate keeps its own counters.
 
 ## Vercel Edge / Next.js App Router
 
@@ -204,7 +220,11 @@ export const runtime = 'edge';
 const app = new Hono().basePath('/api');
 
 // path is the full request path, basePath included.
-const monitor = statusMonitor({ path: '/api/status', groupBy: 'route' });
+const monitor = statusMonitor({
+  path: '/api/status',
+  groupBy: 'route',
+  authorize: (c) => !!process.env.STATUS_TOKEN && c.req.header('x-token') === process.env.STATUS_TOKEN,
+});
 
 app.use('*', monitor.middleware);
 app.route('/status', monitor.routes);
@@ -245,11 +265,10 @@ pm2 start cluster.js --name my-app
 
 Don't start the app with `pm2 start server.js -i max`: PM2 cluster instances aren't forked by your primary, so there is no primary to relay metrics between them.
 
-`availableParallelism()` needs Node 18.14+; use `os.cpus().length` on older versions.
 
 ## Putting the dashboard behind auth
 
-The status surface is public unless you protect it. In production (`NODE_ENV=production`) the monitor logs a warning when `authorize` isn't set.
+The status surface is closed by default: with neither `authorize` nor `publicAccess` set, every status route answers 403 and the monitor logs one warning when it's created.
 
 ### `authorize`
 
@@ -273,8 +292,12 @@ const monitor = statusMonitor({
 
 ### Hono `basicAuth`
 
+The monitor can't see middleware you put in front of it, so set `publicAccess: true` to let the routes answer once your auth has passed the request:
+
 ```ts
 import { basicAuth } from 'hono/basic-auth';
+
+const monitor = statusMonitor({ publicAccess: true });   // access is enforced by basicAuth
 
 app.use('*', monitor.middleware);
 app.use('/status/*', basicAuth({ username: 'admin', password: process.env.STATUS_PASSWORD! }));
@@ -283,11 +306,11 @@ app.route('/status', monitor.routes);   // after the auth middleware
 
 `/status/*` also matches `/status` itself. The dashboard fetches its data with `credentials: 'same-origin'`, so the browser resends the basic-auth credentials on every poll and on the SSE stream.
 
-Any other Hono auth middleware (JWT, session cookie, your identity-aware proxy) works the same way: register it on `/status/*` before `app.route`.
+Any other Hono auth middleware (JWT, session cookie, your identity-aware proxy) works the same way: register it on `/status/*` before `app.route`, and set `publicAccess: true`.
 
 ## Kubernetes probes with `authorize` set
 
-`authorize` also gates `/status/health`, so an unauthenticated probe gets 401. Options:
+`authorize` also gates `/status/health`, so an unauthenticated probe gets 401 (or 403 when neither `authorize` nor `publicAccess` is set). Options:
 
 **1. Expose health on a separate, unguarded route** (recommended; no metrics or dashboard exposed):
 
@@ -330,7 +353,7 @@ Health checks that call a dependency should have a timeout so a hung dependency 
 
 ```ts
 statusMonitor({
-  healthCheckTimeout: 3000,        // default for every check (off by default in 1.x)
+  healthCheckTimeout: 3000,        // default for every check (5000 if unset; 0 disables)
   healthChecks: {
     db: { check: pingDb, timeoutMs: 1000 },          // per-check override
     cache: { check: pingRedis, required: false },     // reported, never causes 503
@@ -392,13 +415,14 @@ Notes:
 - With `sampleRate` below 1, the histogram only holds sampled requests. `hono_requests_total` and `hono_http_responses_total` always count every request.
 - Routes evicted by `maxTrackedRoutes` drop their histogram series, and `resetStats()` clears them; `rate()` handles the resulting counter resets.
 - In cluster mode each worker exports its own histogram, and a scrape of the shared port reaches whichever worker accepts the connection.
-- On edge, the histogram is per isolate.
+- On edge, the histogram is per isolate, and the system gauges (`_cpu_percent`, `_memory_*`, `_heap_*`, `_load_average`, `_event_loop_lag_ms`) aren't emitted.
+- Custom counters and gauges from `monitor.counter()` / `monitor.gauge()` appear as `hono_<name>`; see [Custom metrics](../README.md#custom-metrics). For OpenTelemetry export, see [OpenTelemetry](./opentelemetry.md).
 
 ## Grafana embedding
 
 To show the dashboard inside Grafana (a Text panel in HTML mode with an `<iframe>`), Backstage or another tool on a different origin:
 
-- Leave `securityHeaders` off (the 1.x default). With `securityHeaders: true` the dashboard sends `frame-ancestors 'self'` and `X-Frame-Options: SAMEORIGIN`, so browsers refuse to render it in a cross-origin frame. Alternatively, serve Grafana and the app from the same origin behind a reverse proxy and keep `securityHeaders` on.
+- Set `securityHeaders: false`. By default the dashboard sends `frame-ancestors 'self'` and `X-Frame-Options: SAMEORIGIN`, so browsers refuse to render it in a cross-origin frame. Alternatively, serve Grafana and the app from the same origin behind a reverse proxy and keep `securityHeaders` on.
 - The iframe can't send custom headers. If the dashboard is protected, use auth the browser sends by itself (a cookie for the app's domain, basic auth, or an authenticating proxy). Third-party cookies in cross-origin iframes are blocked by many browsers; same-origin avoids that.
 - Grafana sanitizes HTML in Text panels by default; embedding an iframe requires `disable_sanitize_html = true` under `[panels]` in `grafana.ini`.
 

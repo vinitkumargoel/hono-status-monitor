@@ -4,8 +4,9 @@
 // No Node.js dependencies (os, cluster, socket.io, etc.)
 // =============================================================================
 
-import type { StatusMonitorConfig } from './types.js';
+import type { StatusMonitor, StatusMonitorConfig } from './types.js';
 import { createEdgeStatusMonitor } from './edge-status.js';
+import type { EdgeMonitor } from './monitor-edge.js';
 
 // Re-export types (these have no Node.js deps)
 export * from './types.js';
@@ -15,7 +16,9 @@ export { generateEdgeDashboard, type EdgeDashboardProps } from './dashboard-edge
 export { escapeHtml, toPrometheus } from './format.js';
 export { mergeSnapshots, generateInstanceId } from './edge-store.js';
 export { defaultNormalizePath } from './metrics-utils.js';
+export type { CounterMetric, GaugeMetric, MetricLabels, CustomMetricSeries } from './custom-metrics.js';
 export { createMiddleware, createRequestTrackingMiddleware } from './request-tracking.js';
+export { StatusMonitorConfigError } from './config.js';
 
 // Platform helpers are dependency-free and behave the same on every runtime, so
 // they are exported here too. This keeps the edge entry close to a drop-in
@@ -25,6 +28,7 @@ export {
     detectPlatform,
     isNodeEnvironment,
     isBunEnvironment,
+    isDenoEnvironment,
     isCloudflareEnvironment,
     isEdgeEnvironment,
     getPlatformInfo
@@ -39,7 +43,7 @@ export {
  * import { statusMonitor } from 'hono-status-monitor/edge';
  * 
  * const app = new Hono();
- * const monitor = statusMonitor();
+ * const monitor = statusMonitor({ authorize: (c) => c.req.header('x-status-token') === c.env.STATUS_TOKEN });
  * 
  * app.use('*', monitor.middleware);
  * app.route('/status', monitor.routes);
@@ -47,7 +51,7 @@ export {
  * export default app;
  * ```
  */
-export function statusMonitor(config: StatusMonitorConfig = {}) {
+export function statusMonitor(config: StatusMonitorConfig = {}): StatusMonitor<EdgeMonitor, true> {
     return createEdgeStatusMonitor(config);
 }
 

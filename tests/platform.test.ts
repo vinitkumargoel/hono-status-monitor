@@ -22,7 +22,6 @@ describe('platform detection', () => {
             platform: 'bun',
             hasOsModule: true,
             hasProcessModule: true,
-            hasWebSocketSupport: true,
             hasClusterSupport: false
         });
     });
@@ -40,7 +39,6 @@ describe('platform detection across runtimes', () => {
     it.each([
         ['Cloudflare user agent', { navigator: { userAgent: 'Cloudflare-Workers' } }, 'cloudflare'],
         ['Cloudflare caches.default', { caches: { default: {} } }, 'cloudflare'],
-        ['Deno', { Deno: {} }, 'edge'],
         ['Vercel EdgeRuntime', { EdgeRuntime: 'edge-runtime' }, 'edge'],
         ['nothing recognisable', {}, 'unknown']
     ])('detects %s', async (_, globals, expected) => {
@@ -52,6 +50,26 @@ describe('platform detection across runtimes', () => {
         expect(p.isCloudflareEnvironment()).toBe(expected === 'cloudflare');
         expect(p.isNodeEnvironment()).toBe(false);
         expect(p.getPlatformInfo().hasOsModule).toBe(false);
+    });
+
+    it.each([
+        ['Workers with nodejs_compat', { navigator: { userAgent: 'Cloudflare-Workers' } }, 'cloudflare'],
+        ['Deno 2 (exposes process)', { Deno: {} }, 'deno'],
+        ['Vercel Edge with a process shim', { EdgeRuntime: 'edge-runtime' }, 'edge']
+    ])('prefers the specific runtime over process.versions.node: %s', async (_, globals, expected) => {
+        vi.stubGlobal('process', { versions: { node: '22.0.0' } });
+        for (const [k, v] of Object.entries(globals)) vi.stubGlobal(k, v);
+        const p = await import('../src/platform');
+        expect(p.detectPlatform()).toBe(expected);
+        expect(p.isNodeEnvironment()).toBe(false);
+    });
+
+    it('treats Deno as Node-compatible, not edge', async () => {
+        vi.stubGlobal('Deno', {});
+        const p = await import('../src/platform');
+        expect(p.isDenoEnvironment()).toBe(true);
+        expect(p.isEdgeEnvironment()).toBe(false);
+        expect(p.getPlatformInfo()).toMatchObject({ hasOsModule: true, hasClusterSupport: false });
     });
 
     it('detects plain Node with cluster support', async () => {

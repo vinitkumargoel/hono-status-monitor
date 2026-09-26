@@ -4,7 +4,7 @@ import { statusMonitor } from '../src/index';
 import { statusMonitor as edgeStatusMonitor } from '../src/index-edge';
 import { createMonitor } from '../src/monitor';
 import { createEdgeMonitor, describeEdgeRuntime } from '../src/monitor-edge';
-import { baseDefaults, sanitizeConfig } from '../src/config';
+import { baseDefaults, StatusMonitorConfigError, validateConfig } from '../src/config';
 import { isWorkerMetricsMessage } from '../src/cluster';
 import { toPrometheus } from '../src/format';
 import { generateDashboard } from '../src/dashboard';
@@ -16,38 +16,64 @@ const silence = () => vi.spyOn(console, 'log').mockImplementation(() => {});
 
 afterEach(() => vi.restoreAllMocks());
 
-describe('config sanitizing', () => {
+describe('config validation', () => {
     const defaults = baseDefaults();
 
-    it('replaces unusable values with the default, warning for each', () => {
-        const warn = vi.fn();
-        const out = sanitizeConfig({ ...defaults, updateInterval: 0, retentionSeconds: -5, maxTrackedRoutes: NaN }, defaults, warn);
-        expect(out.updateInterval).toBe(1000);
-        expect(out.retentionSeconds).toBe(60);
-        expect(out.maxTrackedRoutes).toBe(1000);
-        expect(warn).toHaveBeenCalledTimes(3);
+    it('throws one error listing every unusable value', () => {
+        let error: unknown;
+        try {
+            validateConfig({ ...defaults, updateInterval: 0, retentionSeconds: -5, maxTrackedRoutes: NaN });
+        } catch (e) {
+            error = e;
+        }
+        expect(error).toBeInstanceOf(StatusMonitorConfigError);
+        expect((error as StatusMonitorConfigError).problems).toEqual([
+            'updateInterval must be a number > 0; got 0',
+            'retentionSeconds must be a number > 0; got -5',
+            'maxTrackedRoutes must be a number > 0; got NaN'
+        ]);
     });
 
-    it('keeps small-but-valid values, zero where zero is meaningful, and numeric strings', () => {
-        const warn = vi.fn();
-        const out = sanitizeConfig({ ...defaults, updateInterval: 10, maxRoutes: 0, healthCheckTimeout: 0,
-            retentionSeconds: '120' as unknown as number }, defaults, warn);
+    it('keeps small-but-valid values, zero where zero is meaningful, and converts numeric strings', () => {
+        const out = validateConfig({ ...defaults, updateInterval: 10, maxRoutes: 0, healthCheckTimeout: 0,
+            retentionSeconds: '120' as unknown as number });
         expect(out).toMatchObject({ updateInterval: 10, maxRoutes: 0, healthCheckTimeout: 0, retentionSeconds: 120 });
-        expect(warn).not.toHaveBeenCalled();
     });
 
-    it('leaves valid config untouched and silent', () => {
-        const warn = vi.fn();
-        expect(sanitizeConfig(defaults, defaults, warn)).toEqual(defaults);
-        expect(warn).not.toHaveBeenCalled();
+    it('accepts the defaults unchanged', () => {
+        expect(validateConfig(defaults)).toEqual(defaults);
+    });
+
+    it.each([
+        ['a non-function option', { authorize: true }, 'authorize must be a function; got true'],
+        ['a non-boolean flag', { publicAccess: 'yes' }, 'publicAccess must be true or false; got "yes"'],
+        ['a relative path', { path: 'status' }, 'path must start with "/"; got "status"'],
+        ['an unknown groupBy', { groupBy: 'host' }, "groupBy must be 'path' or 'route'; got \"host\""],
+        ['a bad ignorePaths entry', { ignorePaths: [42] }, 'ignorePaths must be an array of strings/RegExps or a function'],
+        ['a health check without a function', { healthChecks: { db: { required: false } } }, 'healthChecks.db must be a function or { check }'],
+        ['an incomplete store', { store: { get() {} } }, 'store must implement get, put and list'],
+        ['a bad logger', { logger: {} }, 'logger must be false or implement warn and error'],
+        ['a non-numeric alert', { alerts: { ...defaults.alerts, cpu: 'high' } }, 'alerts.cpu must be a finite number; got "high"']
+    ])('rejects %s', (_, over, message) => {
+        expect(() => validateConfig({ ...defaults, ...over } as never)).toThrow(message);
+    });
+
+    it('truncates long string values in the message', () => {
+        const secret = 'not-a-real-token-but-long-enough-to-truncate';
+        let message = '';
+        try {
+            validateConfig({ ...defaults, pollingInterval: secret as unknown as number });
+        } catch (e) {
+            message = (e as Error).message;
+        }
+        expect(message).toContain('pollingInterval must be a number > 0');
+        expect(message).not.toContain(secret);
+        expect(message).toContain(`(${secret.length} chars)`);
     });
 
     it('is applied by both monitors', () => {
-        vi.spyOn(console, 'warn').mockImplementation(() => {});
-        const node = createMonitor({ retentionSeconds: -1 });
-        const edge = createEdgeMonitor({ maxTrackedRoutes: 0 });
-        expect(node.config.retentionSeconds).toBe(60);
-        expect(edge.config.maxTrackedRoutes).toBe(1000);
+        expect(() => createMonitor({ retentionSeconds: -1 })).toThrow(StatusMonitorConfigError);
+        expect(() => createEdgeMonitor({ maxTrackedRoutes: 0 })).toThrow(StatusMonitorConfigError);
     });
 
     it('treats explicitly undefined options as unset, silently', async () => {
@@ -74,8 +100,9 @@ describe('metrics interval', () => {
 });
 
 describe('health checks', () => {
-    it('has no timeout unless one is configured', () => {
-        expect(createEdgeMonitor({}).config.healthCheckTimeout).toBe(0);
+    it('times out after 5 s by default; 0 disables it', () => {
+        expect(createEdgeMonitor({}).config.healthCheckTimeout).toBe(5000);
+        expect(createEdgeMonitor({ healthCheckTimeout: 0 }).config.healthCheckTimeout).toBe(0);
     });
 
     it('times out a hung check and reports it as down with the time waited', async () => {
@@ -199,9 +226,9 @@ describe('dashboard security', () => {
     });
 
     for (const [name, make] of [['node', statusMonitor], ['edge', edgeStatusMonitor]] as const) {
-        it(`${name}: by default sends only the always-safe headers`, async () => {
+        it(`${name}: securityHeaders: false sends only the always-safe headers`, async () => {
             silence();
-            const monitor = make({});
+            const monitor = make({ publicAccess: true, securityHeaders: false });
             const res = await monitor.routes.request('/');
             monitor.stop();
             expect(res.headers.get('content-security-policy')).toBeNull();
@@ -210,9 +237,9 @@ describe('dashboard security', () => {
             expect(res.headers.get('cache-control')).toBe('no-store');
         });
 
-        it(`${name}: securityHeaders sends a CSP whose nonce matches the inline script`, async () => {
+        it(`${name}: sends a CSP by default whose nonce matches the inline script`, async () => {
             silence();
-            const monitor = make({ securityHeaders: true });
+            const monitor = make({ publicAccess: true });
             const res = await monitor.routes.request('/');
             monitor.stop();
             const csp = res.headers.get('content-security-policy') ?? '';
@@ -231,7 +258,7 @@ describe('dashboard security', () => {
 
 describe('/api/metrics payload', () => {
     it('includes the health report when checks are configured', async () => {
-        const monitor = edgeStatusMonitor({ healthChecks: { db: async () => ({ connected: true, latencyMs: 3 }) } });
+        const monitor = edgeStatusMonitor({ publicAccess: true, healthChecks: { db: async () => ({ connected: true, latencyMs: 3 }) } });
         const app = new Hono().route('/status', monitor.routes);
         const body = await (await app.request('/status/api/metrics')).json() as { health: { checks: { name: string }[] } };
         expect(body.health.checks.map((c) => c.name)).toEqual(['db']);
@@ -239,7 +266,7 @@ describe('/api/metrics payload', () => {
     });
 
     it('omits health, and runs no checks, when none are configured', async () => {
-        const monitor = edgeStatusMonitor({});
+        const monitor = edgeStatusMonitor({ publicAccess: true });
         const body = await (await monitor.routes.request('/api/metrics')).json() as Record<string, unknown>;
         expect(body).not.toHaveProperty('health');
         expect(body).toHaveProperty('snapshot');
@@ -248,7 +275,7 @@ describe('/api/metrics payload', () => {
 
     it('reuses dashboard health for at least 5 s across polls', async () => {
         const check = vi.fn(async () => ({ connected: true, latencyMs: 1 }));
-        const monitor = edgeStatusMonitor({ healthChecks: { db: check } });
+        const monitor = edgeStatusMonitor({ publicAccess: true, healthChecks: { db: check } });
         vi.useFakeTimers({ toFake: ['Date'] });
         try {
             await monitor.routes.request('/api/metrics');

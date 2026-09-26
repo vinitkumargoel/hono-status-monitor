@@ -3,6 +3,8 @@
 // Shared request accounting for Node.js and edge monitors
 // =============================================================================
 
+import type { Context, MiddlewareHandler } from 'hono';
+
 interface TrackableMonitor {
     config: {
         path: string;
@@ -15,7 +17,9 @@ interface TrackableMonitor {
     beginRequest?(): void;
     endRequest?(route: string, method: string, durationMs: number, statusCode: number, isPattern?: boolean): void;
     /** Called after each tracked request (edge store persistence). */
-    afterRequest?(c: any): void;
+    afterRequest?(c: Context): void;
+    /** Called once, on the first request, so collection starts lazily. */
+    start?(): void;
 }
 
 /** Compile `ignorePaths` into a single predicate (or null when empty). */
@@ -44,8 +48,8 @@ export function compileIgnore(
  * catch-all (`*`, `/*`) matched — i.e. the request hit no route, and grouping
  * it under the catch-all would lump every 404 together.
  */
-function matchedRoutePattern(c: any): string | null {
-    const pattern = c.req?.routePath;
+function matchedRoutePattern(c: Context): string | null {
+    const pattern: unknown = c.req.routePath;
     if (typeof pattern !== 'string' || pattern === '*' || pattern === '/*') return null;
     return pattern;
 }
@@ -79,7 +83,7 @@ function getErrorStatus(error: unknown): number | undefined {
     return undefined;
 }
 
-function getResponseStatus(c: any, error?: unknown): number {
+function getResponseStatus(c: Context, error?: unknown): number {
     const responseStatus = c.res?.status;
     if (typeof responseStatus === 'number' && responseStatus > 0) {
         return responseStatus;
@@ -97,7 +101,7 @@ function getResponseStatus(c: any, error?: unknown): number {
  *
  * Also exported as `createMiddleware` for backwards compatibility.
  */
-export function createRequestTrackingMiddleware(monitor: TrackableMonitor) {
+export function createRequestTrackingMiddleware(monitor: TrackableMonitor): MiddlewareHandler {
     // Fixed for the monitor's lifetime; computed once rather than per request.
     const mountPath = normalizeMountPath(monitor.config.path);
     const ignored = compileIgnore(monitor.config.ignorePaths);
@@ -107,8 +111,14 @@ export function createRequestTrackingMiddleware(monitor: TrackableMonitor) {
     // (the pattern is only known after the handler ran).
     const split = !!beginRequest && !!endRequest;
 
-    return async (c: any, next: () => Promise<void>) => {
-        const path = c.req.path ?? new URL(c.req.url).pathname;
+    let started = false;
+
+    return async (c, next) => {
+        if (!started) {
+            started = true;
+            monitor.start?.();
+        }
+        const path = c.req.path;
 
         if (matchesMountPath(path, mountPath) || (ignored && ignored(path))) {
             await next();

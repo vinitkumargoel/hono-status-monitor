@@ -11,10 +11,10 @@ import type {
     MetricsSnapshot,
     ChartData
 } from './types.js';
-import { calculatePercentiles, defaultNormalizePath, formatUptime, round } from './metrics-utils.js';
+import { calculatePercentiles, defaultNormalizePath, formatUptime, latest, round } from './metrics-utils.js';
 import { persistSnapshot, loadPeerSnapshots, mergeSnapshots, generateInstanceId } from './edge-store.js';
 import { createStatsCore } from './stats-core.js';
-import { baseDefaults, mergeConfig, resolveLogger, sanitizeConfig } from './config.js';
+import { baseDefaults, mergeConfig, resolveLogger, validateConfig } from './config.js';
 import { detectPlatform } from './platform.js';
 
 // Default configuration
@@ -32,10 +32,10 @@ const DEFAULT_EDGE_CONFIG: Required<StatusMonitorConfig> = {
 export function createEdgeMonitor(userConfig: StatusMonitorConfig = {}) {
     // Merge configuration
     const logger = resolveLogger(userConfig.logger);
-    const config: Required<StatusMonitorConfig> = sanitizeConfig(mergeConfig(DEFAULT_EDGE_CONFIG, userConfig, {
+    const config: Required<StatusMonitorConfig> = validateConfig(mergeConfig(DEFAULT_EDGE_CONFIG, userConfig, {
         normalizePath: userConfig.normalizePath || defaultNormalizePath,
         clusterMode: false // Never in cluster mode on edge
-    }), DEFAULT_EDGE_CONFIG, (m) => logger.warn(m));
+    }));
 
 
     const runtime = describeEdgeRuntime();
@@ -71,9 +71,7 @@ export function createEdgeMonitor(userConfig: StatusMonitorConfig = {}) {
      * Check alert conditions (limited to available metrics)
      */
     function checkAlerts(): AlertStatus {
-        const respTime = responseTimeHistory.length > 0
-            ? responseTimeHistory[responseTimeHistory.length - 1].value
-            : 0;
+        const respTime = latest(responseTimeHistory);
         const errorRate = getErrorRate();
 
         return {
@@ -89,7 +87,7 @@ export function createEdgeMonitor(userConfig: StatusMonitorConfig = {}) {
     function fireAlertTransitions(): void {
         if (!config.onAlert) return;
         const current = checkAlerts();
-        const respTime = responseTimeHistory.length > 0 ? responseTimeHistory[responseTimeHistory.length - 1].value : 0;
+        const respTime = latest(responseTimeHistory);
         const values: Record<keyof AlertStatus, number> = {
             cpu: 0, memory: 0, eventLoopLag: 0,
             responseTime: respTime,
@@ -176,12 +174,8 @@ export function createEdgeMonitor(userConfig: StatusMonitorConfig = {}) {
             uptime: uptimeSeconds, // Worker uptime
             processUptime: uptimeSeconds,
             // Request metrics - available
-            responseTime: responseTimeHistory.length > 0
-                ? responseTimeHistory[responseTimeHistory.length - 1].value
-                : 0,
-            rps: rpsHistory.length > 0
-                ? rpsHistory[rpsHistory.length - 1].value
-                : 0,
+            responseTime: latest(responseTimeHistory),
+            rps: latest(rpsHistory),
             statusCodes: { ...state.statusCodes },
             totalRequests: state.totalRequests,
             activeConnections: state.activeConnections,
@@ -316,22 +310,10 @@ export function createEdgeMonitor(userConfig: StatusMonitorConfig = {}) {
         };
     }
 
-    // No-op functions for compatibility
-    function start(): void {
-        // No interval needed in edge - updates happen on each request
-        logger.log('📊 Status monitor started (edge mode)');
-    }
-
-    function stop(): void {
-        // Nothing to stop in edge mode
-        logger.log('📊 Status monitor stopped (edge mode)');
-    }
-
-    // Socket not available in edge
-    function initSocket(): null {
-        logger.log('📊 WebSocket not available in edge mode, use polling');
-        return null;
-    }
+    // Nothing to schedule on edge: numbers are updated per request. Silent,
+    // since every isolate would otherwise log on its first request.
+    function start(): void {}
+    function stop(): void {}
 
     return {
         config,
@@ -350,10 +332,8 @@ export function createEdgeMonitor(userConfig: StatusMonitorConfig = {}) {
         afterRequest,
         start,
         stop,
-        initSocket,
         formatUptime,
-        isEdgeMode: true,
-        get io() { return null; }
+        isEdgeMode: true
     };
 }
 

@@ -85,9 +85,6 @@ describe('sampleRate', () => {
     });
 
     it('rejects values outside 0..1', () => {
-        const warnings: string[] = [];
-        const monitor = createEdgeMonitor({ sampleRate: 2, logger: { log() {}, error() {}, warn: (m: string) => warnings.push(m) } });
-        expect(monitor.config.sampleRate).toBe(1);
-        expect(warnings[0]).toMatch(/sampleRate must be a number from 0 to 1/);
+        expect(() => createEdgeMonitor({ sampleRate: 2 })).toThrow(/sampleRate must be a number from 0 to 1/);
     });
 });

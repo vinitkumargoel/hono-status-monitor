@@ -74,19 +74,33 @@ export async function loadPeerSnapshots(
     excludeInstanceId: string,
     maxPeers = Infinity
 ): Promise<MetricsSnapshot[]> {
+    const ownKey = `${KEY_PREFIX}${excludeInstanceId}`;
+    const parse = (raw: string | null): MetricsSnapshot | null => {
+        if (!raw) return null;
+        try {
+            const parsed = JSON.parse(raw) as unknown;
+            return isValidSnapshot(parsed) ? parsed : null;
+        } catch {
+            return null;
+        }
+    };
     try {
+        if (store.entries) {
+            const entries = await store.entries({ prefix: KEY_PREFIX });
+            return entries
+                .filter((e) => e.name !== ownKey)
+                .slice(0, maxPeers)
+                .map((e) => parse(e.value))
+                .filter((p): p is MetricsSnapshot => p !== null);
+        }
         const listing = await store.list({ prefix: KEY_PREFIX });
-        const ownKey = `${KEY_PREFIX}${excludeInstanceId}`;
         const peers = await Promise.all(
             listing.keys
                 .filter((k) => k.name !== ownKey)
                 .slice(0, maxPeers)
                 .map(async (k) => {
                     try {
-                        const raw = await store.get(k.name);
-                        if (!raw) return null;
-                        const parsed = JSON.parse(raw) as unknown;
-                        return isValidSnapshot(parsed) ? parsed : null;
+                        return parse(await store.get(k.name));
                     } catch {
                         return null;
                     }

@@ -2,6 +2,9 @@
 // HONO STATUS MONITOR - TYPE DEFINITIONS
 // =============================================================================
 
+import type { Context, Hono, MiddlewareHandler } from 'hono';
+import type { CounterMetric, GaugeMetric } from './custom-metrics.js';
+
 /**
  * Configuration options for the status monitor
  */
@@ -10,11 +13,6 @@ export interface StatusMonitorConfig {
     path?: string;
     /** Dashboard title (default: 'Server Status') */
     title?: string;
-    /**
-     * @deprecated Unused since the switch to polling; accepted and ignored so
-     * existing configs keep compiling. Will be removed in 2.0.
-     */
-    socketPath?: string;
     /** Dashboard polling interval in milliseconds (default: 1000 for Node.js, 5000 for edge) */
     pollingInterval?: number;
     /** Metrics collection interval in milliseconds (default: 1000) */
@@ -45,8 +43,7 @@ export interface StatusMonitorConfig {
     /**
      * Give up on a health check after this many milliseconds and report it as
      * disconnected, so one hung dependency can't stall `/health` or the
-     * dashboard. `0` disables the timeout (default: 0 — no timeout; this
-     * becomes 5000 in 2.0).
+     * dashboard. `0` disables the timeout (default: 5000).
      */
     healthCheckTimeout?: number;
     /** Custom path normalization function */
@@ -86,10 +83,19 @@ export interface StatusMonitorConfig {
     /** Enable cluster mode for PM2/multi-process aggregation (auto-detected if not set) */
     clusterMode?: boolean;
     /**
-     * Guard the dashboard, API and stream endpoints. Return `true`/`false`
-     * (or a Promise of it) from the Hono context. Falsy responses get a 401.
+     * Guard the dashboard, API, stream, health and Prometheus endpoints.
+     * Return `true`/`false` (or a Promise of it) from the Hono context; falsy
+     * responses get a 401. Either this or `publicAccess: true` is required for
+     * the status routes to answer at all.
      */
-    authorize?: (c: any) => boolean | Promise<boolean>;
+    authorize?: (c: Context) => boolean | Promise<boolean>;
+    /**
+     * Serve the status routes without `authorize`. Without either, every status
+     * route answers 403 with a message saying how to enable it, so the
+     * dashboard is never public by accident. A common development setting is
+     * `publicAccess: process.env.NODE_ENV !== 'production'` (default: false).
+     */
+    publicAccess?: boolean;
     /** Called whenever an alert transitions between OK and breached. */
     onAlert?: (event: AlertEvent) => void;
     /** Expose a Prometheus/OpenMetrics scrape endpoint at `<path>/prometheus` (default: true) */
@@ -117,10 +123,10 @@ export interface StatusMonitorConfig {
      * Send a nonce-based Content-Security-Policy with the dashboard (scripts
      * limited to its own inline script and the configured Chart.js origin) and
      * restrict framing to the same origin (`frame-ancestors 'self'`,
-     * `X-Frame-Options: SAMEORIGIN`). Off by default in 1.x because it blocks
-     * cross-origin embedding and proxy-injected scripts; it becomes the default
-     * in 2.0. `X-Content-Type-Options: nosniff`, `Referrer-Policy: no-referrer`
-     * and `Cache-Control: no-store` are always sent (default: false).
+     * `X-Frame-Options: SAMEORIGIN`). Set to false if the dashboard must be
+     * embedded cross-origin or a proxy injects scripts into it.
+     * `X-Content-Type-Options: nosniff`, `Referrer-Policy: no-referrer` and
+     * `Cache-Control: no-store` are always sent (default: true).
      */
     securityHeaders?: boolean;
     /**
@@ -156,9 +162,14 @@ export interface HealthCheckDefinition {
     timeoutMs?: number;
 }
 
-/** The subset of `console` the monitor writes through. */
+/**
+ * What the monitor writes through: `console`, pino, winston and most other
+ * loggers fit. `warn` and `error` are required; informational messages go to
+ * `log`, else `info`, else nowhere.
+ */
 export interface StatusLogger {
-    log(...args: unknown[]): void;
+    log?(...args: unknown[]): void;
+    info?(...args: unknown[]): void;
     warn(...args: unknown[]): void;
     error(...args: unknown[]): void;
 }
@@ -171,6 +182,12 @@ export interface StatusStore {
     get(key: string): Promise<string | null>;
     put(key: string, value: string, options?: { expirationTtl?: number }): Promise<void>;
     list(options?: { prefix?: string }): Promise<{ keys: { name: string }[] }>;
+    /**
+     * Optional: keys and values under a prefix in one call. When present the
+     * monitor uses it to load peers instead of `list` plus one `get` per peer
+     * (the Durable Object store implements it).
+     */
+    entries?(options?: { prefix?: string }): Promise<{ name: string; value: string }[]>;
 }
 
 /**
@@ -420,8 +437,6 @@ export interface ChartData {
 export interface DashboardProps {
     hostname: string;
     uptime: string;
-    /** @deprecated Ignored; will be removed in 2.0. */
-    socketPath?: string;
     title: string;
     pollingInterval?: number;
     /** Override the Chart.js script URL */
@@ -443,27 +458,53 @@ export interface DashboardProps {
 }
 
 /**
- * Status monitor instance
+ * The handle returned by `statusMonitor()`.
+ *
+ * Mount `middleware` on the requests you want measured and `routes` under
+ * `config.path`. Collection starts on the first request (or `start()`).
+ *
+ * @typeParam M - The underlying monitor (`Monitor` on Node/Bun/Deno,
+ *   `EdgeMonitor` on edge runtimes).
+ * @typeParam E - Literal type of `isEdgeMode`, so that checking it narrows
+ *   `monitor` when the handle is a union (as the main entry returns).
  */
-export interface StatusMonitor {
-    /** Hono middleware for tracking requests */
-    middleware: (c: any, next: () => Promise<void>) => Promise<void>;
-    /** Pre-configured Hono routes (dashboard, API, health, prometheus, stream) */
-    routes: unknown;
-    /** Initialize server (returns null, kept for backwards compatibility) */
-    initSocket: (server?: any) => null;
-    /** Get current metrics snapshot */
-    getMetrics: () => Promise<MetricsSnapshot>;
-    /** Get chart data */
-    getCharts: () => ChartData;
-    /** Get the aggregated health report (same payload as GET /health) */
-    getHealth: () => Promise<HealthReport>;
-    /** Track a rate limit event */
-    trackRateLimit: (blocked: boolean) => void;
-    /** Reset all accumulated request/route/error counters */
-    resetStats: () => void;
-    /** Stop metrics collection */
-    stop: () => void;
-    /** Whether running in edge mode */
-    isEdgeMode: boolean;
+export interface StatusMonitor<M = unknown, E extends boolean = boolean> {
+    /** Hono middleware that records every request it sees (except the status routes). */
+    middleware: MiddlewareHandler;
+    /** Dashboard, `/api/metrics`, `/api/stream`, `/health` and `/prometheus`; mount at `config.path`. */
+    routes: Hono;
+    /**
+     * Start collecting now. Otherwise collection starts on the first request
+     * through `middleware`, the first authorized status-route hit, or the first
+     * `getMetrics`/`getCharts`/`getHealth` call. Idempotent.
+     */
+    start(): void;
+    /** Stop collecting (timers, IPC listener). Stays stopped until `start()`. */
+    stop(): void;
+    /** Current metrics snapshot (fleet- or cluster-aggregated when configured). */
+    getMetrics(): Promise<MetricsSnapshot>;
+    /** Chart series for the retention window. */
+    getCharts(): ChartData;
+    /** Aggregated health report — the same payload as `GET /health`. */
+    getHealth(): Promise<HealthReport>;
+    /** Count a rate-limit decision for the dashboard. */
+    trackRateLimit(blocked: boolean): void;
+    /** Reset request, route and error counters (system gauges are live). */
+    resetStats(): void;
+    /**
+     * Register (or get) an application counter, exported as
+     * `<prometheusPrefix>_<name>` on `/prometheus` and under `custom` in
+     * `/api/metrics`. Per instance; not merged across workers or isolates.
+     *
+     * @example
+     * const orders = monitor.counter('orders_total', 'Orders placed');
+     * orders.inc({ plan: 'pro' });
+     */
+    counter(name: string, help?: string): CounterMetric;
+    /** Register (or get) an application gauge. See {@link StatusMonitor.counter}. */
+    gauge(name: string, help?: string): GaugeMetric;
+    /** The underlying monitor instance. */
+    monitor: M;
+    /** Whether the request-only edge monitor is in use. Narrows `monitor`. */
+    isEdgeMode: E;
 }

@@ -19,8 +19,17 @@ function fakeMonitor(over: Partial<{ prometheus: boolean }> = {}) {
 }
 
 describe('createAuthGuard', () => {
-    it('returns null when no authorize is configured', () => {
-        expect(createAuthGuard(undefined)).toBeNull();
+    it('returns null only with publicAccess', () => {
+        expect(createAuthGuard(undefined, true)).toBeNull();
+    });
+
+    it('403s with instructions when neither authorize nor publicAccess is set', async () => {
+        const app = new Hono();
+        app.use('*', createAuthGuard(undefined)!);
+        app.get('/x', (c) => c.text('ok'));
+        const res = await app.request('/x');
+        expect(res.status).toBe(403);
+        expect(await res.text()).toContain('publicAccess: true');
     });
 
     it('401s on a falsy or throwing authorize', async () => {

@@ -21,10 +21,10 @@ import {
     isWorkerMetricsMessage,
     type ClusterAggregator
 } from './cluster.js';
-import { calculatePercentiles, defaultNormalizePath, formatUptime, round } from './metrics-utils.js';
+import { calculatePercentiles, defaultNormalizePath, formatUptime, latest, round } from './metrics-utils.js';
 import { detectPlatform } from './platform.js';
 import { createStatsCore } from './stats-core.js';
-import { baseDefaults, mergeConfig, resolveLogger, sanitizeConfig } from './config.js';
+import { baseDefaults, mergeConfig, resolveLogger, validateConfig } from './config.js';
 
 // Default configuration
 const DEFAULT_CONFIG: Required<StatusMonitorConfig> = baseDefaults();
@@ -36,10 +36,10 @@ export function createMonitor(userConfig: StatusMonitorConfig = {}) {
     const inClusterMode = userConfig.clusterMode ?? isClusterWorker();
 
     const logger = resolveLogger(userConfig.logger);
-    const config: Required<StatusMonitorConfig> = sanitizeConfig(mergeConfig(DEFAULT_CONFIG, userConfig, {
+    const config: Required<StatusMonitorConfig> = validateConfig(mergeConfig(DEFAULT_CONFIG, userConfig, {
         normalizePath: userConfig.normalizePath || defaultNormalizePath,
         clusterMode: inClusterMode
-    }), DEFAULT_CONFIG, (m) => logger.warn(m));
+    }));
 
 
     const clusterAggregator: ClusterAggregator | null = inClusterMode
@@ -173,7 +173,7 @@ export function createMonitor(userConfig: StatusMonitorConfig = {}) {
         for (let i = 0; i < cpus.length; i++) {
             const cpu = cpus[i];
             const lastCpu = lastCpuInfo[i];
-            if (!lastCpu) continue;
+            if (!cpu || !lastCpu) continue;
 
             const idle = cpu.times.idle - lastCpu.times.idle;
             const total =
@@ -227,7 +227,7 @@ export function createMonitor(userConfig: StatusMonitorConfig = {}) {
     function getLoadAverage(): number {
         try {
             const loadAvg = os.loadavg();
-            return round(loadAvg[0]);
+            return round(loadAvg[0] ?? 0);
         } catch {
             return 0;
         }
@@ -251,11 +251,11 @@ export function createMonitor(userConfig: StatusMonitorConfig = {}) {
     }
 
     function checkAlerts(): AlertStatus {
-        const cpu = cpuHistory.length > 0 ? cpuHistory[cpuHistory.length - 1].value : 0;
+        const cpu = latest(cpuHistory);
         const memory = getMemoryPercent();
-        const respTime = responseTimeHistory.length > 0 ? responseTimeHistory[responseTimeHistory.length - 1].value : 0;
+        const respTime = latest(responseTimeHistory);
         const errorRate = getErrorRate();
-        const lag = eventLoopLagHistory.length > 0 ? eventLoopLagHistory[eventLoopLagHistory.length - 1].value : 0;
+        const lag = latest(eventLoopLagHistory);
 
         return {
             cpu: cpu > (config.alerts.cpu ?? 80),
@@ -272,11 +272,11 @@ export function createMonitor(userConfig: StatusMonitorConfig = {}) {
 
         const current = checkAlerts();
         const values: Record<keyof AlertStatus, number> = {
-            cpu: cpuHistory.length > 0 ? cpuHistory[cpuHistory.length - 1].value : 0,
+            cpu: latest(cpuHistory),
             memory: getMemoryPercent(),
-            responseTime: responseTimeHistory.length > 0 ? responseTimeHistory[responseTimeHistory.length - 1].value : 0,
+            responseTime: latest(responseTimeHistory),
             errorRate: getErrorRate(),
-            eventLoopLag: eventLoopLagHistory.length > 0 ? eventLoopLagHistory[eventLoopLagHistory.length - 1].value : 0
+            eventLoopLag: latest(eventLoopLagHistory)
         };
         const thresholds: Record<keyof AlertStatus, number> = {
             cpu: config.alerts.cpu ?? 80,
@@ -413,7 +413,7 @@ export function createMonitor(userConfig: StatusMonitorConfig = {}) {
 
         return {
             timestamp: Date.now(),
-            cpu: cpuHistory.length > 0 ? cpuHistory[cpuHistory.length - 1].value : 0,
+            cpu: latest(cpuHistory),
             memoryMB: getMemoryMB(),
             memoryPercent: getMemoryPercent(),
             heapUsedMB: heap.used,
@@ -421,16 +421,12 @@ export function createMonitor(userConfig: StatusMonitorConfig = {}) {
             loadAvg: getLoadAverage(),
             uptime: getSystemUptime(),
             processUptime: Math.round(process.uptime()),
-            responseTime: responseTimeHistory.length > 0
-                ? responseTimeHistory[responseTimeHistory.length - 1].value
-                : 0,
-            rps: rpsHistory.length > 0 ? rpsHistory[rpsHistory.length - 1].value : 0,
+            responseTime: latest(responseTimeHistory),
+            rps: latest(rpsHistory),
             statusCodes: { ...state.statusCodes },
             totalRequests: state.totalRequests,
             activeConnections: state.activeConnections,
-            eventLoopLag: eventLoopLagHistory.length > 0
-                ? eventLoopLagHistory[eventLoopLagHistory.length - 1].value
-                : 0,
+            eventLoopLag: latest(eventLoopLagHistory),
             hostname: getHostname(),
             platform: getPlatformLabel(),
             nodeVersion: getRuntimeVersion(),
@@ -467,8 +463,6 @@ export function createMonitor(userConfig: StatusMonitorConfig = {}) {
     }
 
     // Peer workers' metrics arrive over IPC (relayed by setupClusterPrimary).
-    // Registered by start() — before 1.2.0 only initSocket() did this, so a
-    // cluster whose code never called initSocket() showed only its own worker.
     let ipcListener: ((message: unknown) => void) | null = null;
     function listenToPeers(): void {
         if (ipcListener || !config.clusterMode || !clusterAggregator) return;
@@ -523,15 +517,6 @@ export function createMonitor(userConfig: StatusMonitorConfig = {}) {
         gcPauseTimeMs = 0;
     }
 
-    // initSocket is now a no-op for backwards compatibility
-    function initSocket(): null {
-        logger.log('📊 Status monitor using polling mode (no WebSocket)');
-
-        listenToPeers(); // Idempotent; start() already did this.
-
-        return null;
-    }
-
     // For cluster mode aggregation
     function getAggregatedSnapshot(): Promise<MetricsSnapshot> {
         return getMetricsSnapshot().then(snapshot => {
@@ -566,9 +551,7 @@ export function createMonitor(userConfig: StatusMonitorConfig = {}) {
         resetStats,
         start,
         stop,
-        initSocket,
-        formatUptime,
-        get io() { return null; }
+        formatUptime
     };
 }
 

@@ -48,7 +48,7 @@ export const BASELINE_HEADERS: Readonly<Record<string, string>> = {
 };
 
 /**
- * Opt-in (`securityHeaders: true`): a nonce-based CSP and same-origin framing.
+ * Sent unless `securityHeaders: false`: a nonce-based CSP and same-origin framing.
  * Returns only the baseline headers if a script URL can't be expressed as a CSP
  * source — sending a policy that blocks the configured Chart.js would be worse
  * than sending none.

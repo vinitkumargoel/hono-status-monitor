@@ -19,7 +19,7 @@ export function escapeHtml(value: unknown): string {
         .replace(/'/g, '&#39;');
 }
 
-function sanitizeLabel(value: string): string {
+export function sanitizeLabel(value: string): string {
     return value.replace(/\\/g, '\\\\').replace(/"/g, '\\"').replace(/[\r\n]/g, ' ');
 }
 
@@ -40,7 +40,8 @@ function line(name: string, value: number, labels?: Record<string, string>): str
 export function toPrometheus(
     snapshot: MetricsSnapshot,
     prefix = 'hono',
-    histograms: RouteHistogram[] = []
+    histograms: RouteHistogram[] = [],
+    options: { system?: boolean } = {}
 ): string {
     const p = prefix.replace(/[^a-zA-Z0-9_]/g, '_');
     let out = '';
@@ -54,15 +55,21 @@ export function toPrometheus(
         out += line(`${p}_${name}`, value, labels);
     };
 
-    gauge('cpu_percent', 'CPU usage percentage', snapshot.cpu);
-    gauge('memory_used_bytes', 'System memory used in bytes', snapshot.memoryMB * 1024 * 1024);
-    gauge('memory_percent', 'System memory used percentage', snapshot.memoryPercent);
-    gauge('heap_used_bytes', 'Heap used in bytes', snapshot.heapUsedMB * 1024 * 1024);
-    gauge('heap_total_bytes', 'Heap total in bytes', snapshot.heapTotalMB * 1024 * 1024);
-    gauge('load_average', 'System 1-minute load average', snapshot.loadAvg);
+    // System gauges are omitted where the runtime can't measure them (edge),
+    // rather than exported as constant zeros that look like real readings.
+    if (options.system !== false) {
+        gauge('cpu_percent', 'CPU usage percentage', snapshot.cpu);
+        gauge('memory_used_bytes', 'System memory used in bytes', snapshot.memoryMB * 1024 * 1024);
+        gauge('memory_percent', 'System memory used percentage', snapshot.memoryPercent);
+        gauge('heap_used_bytes', 'Heap used in bytes', snapshot.heapUsedMB * 1024 * 1024);
+        gauge('heap_total_bytes', 'Heap total in bytes', snapshot.heapTotalMB * 1024 * 1024);
+        gauge('load_average', 'System 1-minute load average', snapshot.loadAvg);
+    }
     gauge('uptime_seconds', 'System uptime in seconds', snapshot.uptime);
     gauge('process_uptime_seconds', 'Process uptime in seconds', snapshot.processUptime);
-    gauge('event_loop_lag_ms', 'Event loop lag in milliseconds', snapshot.eventLoopLag);
+    if (options.system !== false) {
+        gauge('event_loop_lag_ms', 'Event loop lag in milliseconds', snapshot.eventLoopLag);
+    }
     gauge('active_connections', 'In-flight requests', snapshot.activeConnections);
     gauge('rps', 'Requests per second', snapshot.rps);
     gauge('response_time_ms', 'Average response time (ms)', snapshot.responseTime);
@@ -97,7 +104,7 @@ export function toPrometheus(
         for (const h of histograms) {
             const labels = { method: h.method, route: h.route, status: String(h.status) };
             HISTOGRAM_BUCKETS_SECONDS.forEach((le, i) => {
-                out += line(`${name}_bucket`, h.buckets[i], { ...labels, le: String(le) });
+                out += line(`${name}_bucket`, h.buckets[i] ?? 0, { ...labels, le: String(le) });
             });
             out += line(`${name}_bucket`, h.count, { ...labels, le: '+Inf' });
             out += line(`${name}_sum`, Math.round(h.sum * 1e6) / 1e6, labels);

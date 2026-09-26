@@ -2,6 +2,38 @@
 
 All notable changes to this project are documented here. The project follows [Semantic Versioning](https://semver.org/).
 
+## 2.0.0
+
+Secure defaults, fail-fast config, custom metrics and an OpenTelemetry bridge. **Read the [migration guide](./docs/migrating-to-2.md)** before upgrading: most apps need one new option (`authorize` or `publicAccess`).
+
+### Breaking
+
+- **The status routes are closed by default.** The dashboard, `/api/metrics`, `/api/stream`, `/health` and `/prometheus` answer 403 with an explanatory text body unless `authorize` or the new `publicAccess: true` is set, and the monitor logs one warning at construction when neither is. `/health` is included, so point load-balancer probes at a separate route, allow them in `authorize`, or set `publicAccess`. This replaces the 1.2 warning that only fired in production.
+- **`securityHeaders` defaults to `true`** (nonce CSP and same-origin framing). Set `false` to embed the dashboard cross-origin.
+- **`healthCheckTimeout` defaults to 5000 ms.** `0` disables it.
+- **Invalid config throws `StatusMonitorConfigError`** (exported from both entries, with `problems: string[]`), listing every problem at once, instead of warning and using the default. Checked: numeric ranges, function/boolean/string types, `path` starting with `/`, `groupBy`, `ignorePaths`, `healthChecks` entries, `store` and `logger`. Numeric strings are still accepted.
+- **Lazy start.** Creating a monitor has no side effects. Collection starts on the first request through `middleware` or a status route, or on `start()`. `stop()` stays in effect until `start()`.
+- **Removed:** `initSocket()` (handle and monitor), the monitor's `io` getter, the `socketPath` option and `DashboardProps.socketPath`, and `getPlatformInfo().hasWebSocketSupport`.
+- **Platform detection:** `detectPlatform()` can return `'deno'`, and checks bun → deno → cloudflare → `EdgeRuntime` → node, so Workers with `nodejs_compat` are detected as `'cloudflare'`. `isEdgeEnvironment()` is `false` on Deno, which now gets the full Node-compatible monitor from the main entry.
+- **Entry resolution:** the main export has `workerd` and `edge-light` conditions, so `import 'hono-status-monitor'` in Wrangler and Vercel Edge bundles gets the edge build.
+- **Node 18 is dropped** (`engines.node >= 20`). The `hono` peer range is `^4.0.0`.
+- **Types:** `authorize` takes Hono's `Context`; the handle is `StatusMonitor<M>` with `middleware: MiddlewareHandler` and `routes: Hono`. `statusMonitor()` returns `StatusMonitor<Monitor | EdgeMonitor>` from the main entry and `StatusMonitor<EdgeMonitor>` from `/edge`.
+- **Prometheus on edge** no longer emits the always-zero system gauges (`cpu_percent`, `memory_used_bytes`, `memory_percent`, `heap_used_bytes`, `heap_total_bytes`, `load_average`, `event_loop_lag_ms`).
+
+### Added
+
+- **`publicAccess`** option to serve the status routes without `authorize`.
+- **Custom metrics:** `monitor.counter(name, help?)` (`.inc(labels?, value = 1)`) and `monitor.gauge(name, help?)` (`.set(value, labels?)`, `.inc(labels?, value)`). Exported on `/prometheus` as `<prometheusPrefix>_<name>` and under `custom` in `/api/metrics` when any are registered. Per instance; names and labels are validated; at most 200 label combinations per metric (warns once).
+- **OpenTelemetry bridge:** `registerOtelMetrics(meter, monitor, options)` from `hono-status-monitor/otel`, with no `@opentelemetry/*` dependency. See [docs/opentelemetry.md](./docs/opentelemetry.md).
+- **Durable Object store:** `durableObjectStore(namespace)` and `StatusStoreObject` from `hono-status-monitor/durable-object`, a strongly consistent `store` for edge fleet aggregation. See [docs/durable-object-store.md](./docs/durable-object-store.md).
+- `StatusStore` gained an optional `entries({ prefix })` returning keys with values. When a store implements it (the Durable Object store does), peers load in one call instead of `list` plus one `get` per peer.
+- `handle.start()`, `isDenoEnvironment()`, and JSDoc on the `StatusMonitor` handle.
+
+### Changed
+
+- The edge monitor's `start()` / `stop()` no longer log.
+- Deno uses the full monitor (system metrics, SSE) from the main entry; `/edge` still works there with request-only metrics.
+
 ## 1.2.0
 
 New, opt-in capabilities and a better dashboard. Nothing is removed, and every option defaults to the 1.1.x behaviour.

@@ -1,14 +1,14 @@
 // =============================================================================
 // HONO STATUS MONITOR
 // Real-time server monitoring dashboard for Hono.js (live over SSE / polling)
-// Supports Node.js and Cloudflare Workers/Edge environments
+// Supports Node.js, Bun, Deno, Cloudflare Workers and other edge runtimes
 // =============================================================================
 
-import type { StatusMonitorConfig } from './types.js';
+import type { StatusMonitor, StatusMonitorConfig } from './types.js';
 import { detectPlatform } from './platform.js';
-import { createMonitor } from './monitor.js';
+import { createMonitor, type Monitor } from './monitor.js';
 import { createEdgeStatusMonitor } from './edge-status.js';
-import { randomBytes } from 'node:crypto';
+import type { EdgeMonitor } from './monitor-edge.js';
 import { assembleStatusMonitor } from './status-factory.js';
 
 // Re-export types
@@ -20,6 +20,7 @@ export {
     detectPlatform,
     isNodeEnvironment,
     isBunEnvironment,
+    isDenoEnvironment,
     isCloudflareEnvironment,
     isEdgeEnvironment,
     getPlatformInfo
@@ -28,6 +29,7 @@ export {
 // Conditionally export Node.js-specific modules
 // These will throw errors if imported in edge environments
 export { createMonitor, type Monitor } from './monitor.js';
+export { StatusMonitorConfigError } from './config.js';
 export { createMiddleware, createRequestTrackingMiddleware } from './request-tracking.js';
 export {
     isClusterWorker,
@@ -39,11 +41,15 @@ export {
 export { escapeHtml, toPrometheus } from './format.js';
 export { mergeSnapshots, generateInstanceId } from './edge-store.js';
 export { defaultNormalizePath } from './metrics-utils.js';
+export type { CounterMetric, GaugeMetric, MetricLabels, CustomMetricSeries } from './custom-metrics.js';
 
 /**
  * Create a complete status monitor: tracking middleware plus dashboard, JSON,
  * SSE, health and Prometheus routes. Detects the runtime and picks the full
- * (Node/Bun) or request-only (edge) collector.
+ * (Node/Bun/Deno) or request-only (edge) collector.
+ *
+ * The status routes answer 403 until you set `authorize` (recommended) or
+ * `publicAccess: true`. Invalid options throw a `StatusMonitorConfigError`.
  * 
  * @example Node.js
  * ```typescript
@@ -52,7 +58,9 @@ export { defaultNormalizePath } from './metrics-utils.js';
  * import { statusMonitor } from 'hono-status-monitor';
  * 
  * const app = new Hono();
- * const monitor = statusMonitor();
+ * const monitor = statusMonitor({
+ *     authorize: (c) => c.req.header('x-status-token') === process.env.STATUS_TOKEN,
+ * });
  * 
  * app.use('*', monitor.middleware);
  * app.route('/status', monitor.routes);
@@ -66,7 +74,7 @@ export { defaultNormalizePath } from './metrics-utils.js';
  * import { statusMonitor } from 'hono-status-monitor/edge';
  * 
  * const app = new Hono();
- * const monitor = statusMonitor();
+ * const monitor = statusMonitor({ publicAccess: true });
  * 
  * app.use('*', monitor.middleware);
  * app.route('/status', monitor.routes);
@@ -74,25 +82,20 @@ export { defaultNormalizePath } from './metrics-utils.js';
  * export default app;
  * ```
  */
-export function statusMonitor(config: StatusMonitorConfig = {}) {
-    // Force platform check if specified in config
+export function statusMonitor(
+    config: StatusMonitorConfig = {}
+): StatusMonitor<Monitor, false> | StatusMonitor<EdgeMonitor, true> {
     const platform = detectPlatform();
-    const useFullMetricsMonitor = platform === 'node' || platform === 'bun';
-
-    if (useFullMetricsMonitor) {
-        // Node.js/Bun version with full features
-        return createNodeStatusMonitor(config);
-    } else {
-        // Edge/Cloudflare version with limited features
-        return createEdgeStatusMonitor(config);
-    }
+    return platform === 'node' || platform === 'bun' || platform === 'deno'
+        ? createNodeStatusMonitor(config)
+        : createEdgeStatusMonitor(config);
 }
 
 /**
  * Create a Node.js status monitor with full features
  * Requires Node.js runtime with os, process, http modules
  */
-function createNodeStatusMonitor(config: StatusMonitorConfig = {}) {
+function createNodeStatusMonitor(config: StatusMonitorConfig = {}): StatusMonitor<Monitor, false> {
     const monitor = createMonitor(config);
 
     return assembleStatusMonitor(monitor, {
@@ -116,22 +119,14 @@ function createNodeStatusMonitor(config: StatusMonitorConfig = {}) {
             });
         },
         enableStream: true,
-        isEdgeMode: false,
-        // node:crypto rather than Web Crypto, which Node 18 doesn't expose globally.
-        generateNonce: () => randomBytes(16).toString('base64'),
-        initSocket: (_server?: any) => monitor.initSocket()
+        isEdgeMode: false as const
     });
 }
 
 /**
- * Create an edge-compatible status monitor with limited features
- * Works in Cloudflare Workers, Vercel Edge, and other edge runtimes
+ * Create the request-only edge monitor regardless of the detected runtime.
  */
-/**
- * Explicitly create an edge-compatible status monitor
- * Use this when you want to force edge mode regardless of environment
- */
-export function statusMonitorEdge(config: StatusMonitorConfig = {}) {
+export function statusMonitorEdge(config: StatusMonitorConfig = {}): StatusMonitor<EdgeMonitor, true> {
     return createEdgeStatusMonitor(config);
 }
 
