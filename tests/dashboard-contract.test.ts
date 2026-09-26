@@ -38,7 +38,7 @@ describe('dashboard snapshot contract', () => {
             const monitor = make();
             monitor.trackRequest('/x', 'GET');
             monitor.trackRequestComplete('/x', 'GET', 7, 200);
-            const snapshot: Record<string, unknown> = await monitor.getMetricsSnapshot();
+            const snapshot = (await monitor.getMetricsSnapshot()) as unknown as Record<string, unknown>;
             monitor.stop();
 
             for (const key of NUMERIC_FIELDS) {

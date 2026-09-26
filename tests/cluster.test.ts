@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { createClusterAggregator } from '../src/cluster';
-import { MetricsSnapshot, ChartData } from '../src/types';
+import type { MetricsSnapshot, ChartData } from '../src/types';
 
 describe('ClusterAggregator', () => {
     it('should initialize correctly', () => {

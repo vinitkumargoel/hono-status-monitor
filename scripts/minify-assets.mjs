@@ -60,9 +60,10 @@ async function minifyInterpolatedJs(code) {
 /** IDs the client script drives; a dropped card would silently stop updating. */
 const REQUIRED_IDS = {
     node: ['cpuVal', 'memVal', 'heapVal', 'rtVal', 'rpsVal', 'lagVal', 'uptime',
-        'totalReq', 'errorRate', 'topRoutes', 'errorsPanel', 'cpuChart', 'dbStatus'],
+        'totalReq', 'errorRate', 'topRoutes', 'errorsPanel', 'cpuChart', 'healthList',
+        'connBadge', 'themeToggle'],
     edge: ['rtVal', 'rpsVal', 'errRateVal', 'uptime', 'totalReq', 'errorRate',
-        'topRoutes', 'errorsPanel', 'rtChart']
+        'topRoutes', 'errorsPanel', 'rtChart', 'healthList', 'connBadge', 'themeToggle']
 };
 
 /**
@@ -92,7 +93,9 @@ async function validate() {
         if (!html.includes('4321')) {
             throw new Error(`${name} dashboard lost its pollingInterval interpolation`);
         }
-        const script = html.slice(html.lastIndexOf('<script>') + 8, html.lastIndexOf('</script>'));
+        // The client script is the last <script ...> block (it may carry a nonce).
+        const open = html.lastIndexOf('<script');
+        const script = html.slice(html.indexOf('>', open) + 1, html.lastIndexOf('</script>'));
         if (script.trim().length === 0) throw new Error(`${name} dashboard has an empty client script`);
         // Throws on a syntax error introduced by the placeholder round-trip.
         await transform(script, { loader: 'js' });

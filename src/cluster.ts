@@ -3,7 +3,7 @@
 // PM2 / Node.js Cluster mode support for metrics aggregation
 // =============================================================================
 
-import cluster from 'cluster';
+import cluster from 'node:cluster';
 import type {
     MetricsSnapshot,
     ChartData,
@@ -66,9 +66,53 @@ export function sendMetricsToMaster(
 
     try {
         process.send(message);
-    } catch (error) {
+    } catch {
         // Silently ignore send errors (master may have died)
     }
+}
+
+/** Numeric snapshot fields the aggregator sums or averages. */
+const NUMERIC_METRIC_FIELDS = [
+    'cpu', 'memoryMB', 'rps', 'totalRequests', 'activeConnections', 'responseTime', 'errorRate'
+] as const;
+
+/** Upper bound on points per chart series accepted over IPC. */
+const MAX_IPC_CHART_POINTS = 10000;
+
+function isFiniteNumber(v: unknown): v is number {
+    return typeof v === 'number' && Number.isFinite(v);
+}
+
+function isPointArray(v: unknown): boolean {
+    return Array.isArray(v) &&
+        v.length <= MAX_IPC_CHART_POINTS &&
+        v.every((p) => p && typeof p === 'object' &&
+            isFiniteNumber((p as MetricDataPoint).timestamp) &&
+            isFiniteNumber((p as MetricDataPoint).value));
+}
+
+/**
+ * Shape-check an IPC message before it is merged into the aggregate. IPC is
+ * only reachable from processes the app itself forked, so this is defence in
+ * depth: it stops a malformed message (a version skew during a rolling restart,
+ * another library sharing the channel) from turning sums into NaN or string
+ * concatenation.
+ */
+export function isWorkerMetricsMessage(message: unknown): message is WorkerMetricsMessage {
+    if (!message || typeof message !== 'object') return false;
+    const m = message as Partial<WorkerMetricsMessage>;
+    if (m.type !== 'worker-metrics') return false;
+    if (!isFiniteNumber(m.workerId) || !isFiniteNumber(m.pid)) return false;
+    if (!m.metrics || typeof m.metrics !== 'object') return false;
+    for (const key of NUMERIC_METRIC_FIELDS) {
+        const v = (m.metrics as Record<string, unknown>)[key];
+        if (v !== undefined && !isFiniteNumber(v)) return false;
+    }
+    if (!m.charts || typeof m.charts !== 'object') return false;
+    for (const series of Object.values(m.charts)) {
+        if (!isPointArray(series)) return false;
+    }
+    return true;
 }
 
 /**
@@ -97,6 +141,7 @@ export function createClusterAggregator(options: { maxRoutes?: number } = {}) {
      * Update metrics from a worker
      */
     function updateWorkerMetrics(message: WorkerMetricsMessage): void {
+        if (!isWorkerMetricsMessage(message)) return;
         workerMetrics[message.workerId] = {
             pid: message.pid,
             metrics: message.metrics,
@@ -111,8 +156,8 @@ export function createClusterAggregator(options: { maxRoutes?: number } = {}) {
     function cleanupStaleWorkers(): void {
         const now = Date.now();
         for (const workerId of Object.keys(workerMetrics)) {
-            if (now - workerMetrics[parseInt(workerId)].lastUpdate > WORKER_TIMEOUT_MS) {
-                delete workerMetrics[parseInt(workerId)];
+            if (now - workerMetrics[parseInt(workerId, 10)].lastUpdate > WORKER_TIMEOUT_MS) {
+                delete workerMetrics[parseInt(workerId, 10)];
             }
         }
     }
@@ -355,19 +400,14 @@ export function setupClusterPrimary(options: { respawn?: boolean } = {}): void {
     const { respawn = true } = options;
 
     const broadcast = (message: unknown) => {
-        if (
-            message &&
-            typeof message === 'object' &&
-            'type' in message &&
-            (message as WorkerMetricsMessage).type === 'worker-metrics'
-        ) {
+        if (isWorkerMetricsMessage(message)) {
             for (const id in cluster.workers) {
                 cluster.workers[id]?.send(message);
             }
         }
     };
 
-    const attach = (worker: import('cluster').Worker) => worker.on('message', broadcast);
+    const attach = (worker: import('node:cluster').Worker) => worker.on('message', broadcast);
 
     for (const id in cluster.workers) {
         const worker = cluster.workers[id];

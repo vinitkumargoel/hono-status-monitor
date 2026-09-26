@@ -19,6 +19,56 @@ import { round } from './metrics-utils.js';
 /** Cap on retained latency samples; percentiles are computed from these. */
 const MAX_RESPONSE_TIME_SAMPLES = 1000;
 
+/** Cap on memoised raw-path -> normalized-path entries. */
+const MAX_NORMALIZE_CACHE = 1000;
+
+/**
+ * How long a health report is reused. Short enough that `/health` stays fresh
+ * for probes, long enough that N dashboard tabs or SSE clients polling at once
+ * cost one round of checks rather than N.
+ */
+const HEALTH_CACHE_MS = 1000;
+
+/**
+ * The placeholder used when no `healthCheck` is configured. Exported so the
+ * monitors can share one identity and the core can tell "configured" from
+ * "defaulted".
+ */
+export const DEFAULT_HEALTH_CHECK = async (): Promise<HealthCheckResult> => ({ connected: true, latencyMs: 0 });
+
+/** Outcome of one health-check call: its result or error, and how long it took. */
+export interface CheckOutcome {
+    result?: HealthCheckResult;
+    error?: unknown;
+    elapsedMs: number;
+}
+
+/** Route lists derived from one pass over the tracked routes. */
+export interface RouteLists {
+    topRoutes: RouteStats[];
+    slowestRoutes: RouteStats[];
+    errorRoutes: RouteStats[];
+}
+
+/**
+ * Race `fn()` against a timeout. The timer is unref'd so a pending check never
+ * keeps the process alive, and cleared as soon as either side settles.
+ * `ms <= 0` disables the timeout.
+ */
+export async function withTimeout<T>(fn: () => Promise<T>, ms: number, label: string): Promise<T> {
+    if (!(ms > 0)) return fn();
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const timeout = new Promise<never>((_, reject) => {
+        timer = setTimeout(() => reject(new Error(`${label} timed out after ${ms}ms`)), ms);
+        (timer as { unref?: () => void }).unref?.();
+    });
+    try {
+        return await Promise.race([fn(), timeout]);
+    } finally {
+        if (timer) clearTimeout(timer);
+    }
+}
+
 /**
  * Mutable counters owned by the core. Exposed directly (rather than behind
  * accessors) because both monitors read these on every snapshot and the
@@ -35,6 +85,13 @@ export interface StatsState {
     responseTimeSamples: number[];
     rateLimitBlocked: number;
     rateLimitTotal: number;
+    /** Sum of `errors` across tracked routes, kept incrementally. */
+    totalErrors: number;
+    /**
+     * Requests that were in flight when the counters were reset. Their
+     * completions are dropped so a reset really starts from zero.
+     */
+    staleCompletions: number;
     readonly routeStats: Map<string, RouteStats>;
     readonly recentErrors: ErrorEntry[];
 }
@@ -67,39 +124,63 @@ export function createStatsCore(
         responseTimeSamples: [],
         rateLimitBlocked: 0,
         rateLimitTotal: 0,
+        totalErrors: 0,
+        staleCompletions: 0,
         routeStats: new Map<string, RouteStats>(),
         recentErrors: []
     };
 
+    const normalizeCache = new Map<string, string>();
+
+    /**
+     * `config.normalizePath` memoised per raw path. Every request normalizes its
+     * path twice (start and completion), and the default normalizer is three
+     * regex passes; a Map hit is far cheaper. Cleared wholesale when full so a
+     * flood of unique paths can't grow it without bound.
+     */
+    function normalize(path: string): string {
+        const hit = normalizeCache.get(path);
+        if (hit !== undefined) return hit;
+        const normalized = config.normalizePath(path);
+        if (normalizeCache.size >= MAX_NORMALIZE_CACHE) normalizeCache.clear();
+        normalizeCache.set(path, normalized);
+        return normalized;
+    }
+
+    /**
+     * Top, slowest and error route lists from a single copy of the route map.
+     * Snapshots need all three, so deriving them together avoids copying the
+     * map three times.
+     */
+    function getRouteLists(): RouteLists {
+        const routes = Array.from(state.routeStats.values());
+        const max = config.maxRoutes;
+        return {
+            topRoutes: [...routes].sort((a, b) => b.count - a.count).slice(0, max),
+            slowestRoutes: routes.filter(r => r.count > 0).sort((a, b) => b.avgTime - a.avgTime).slice(0, max),
+            errorRoutes: routes.filter(r => r.errors > 0).sort((a, b) => b.errors - a.errors).slice(0, max)
+        };
+    }
+
     /** Top routes by request count. */
     function getTopRoutes(): RouteStats[] {
-        return Array.from(state.routeStats.values())
-            .sort((a, b) => b.count - a.count)
-            .slice(0, config.maxRoutes);
+        return getRouteLists().topRoutes;
     }
 
     /** Slowest routes by average response time. */
     function getSlowestRoutes(): RouteStats[] {
-        return Array.from(state.routeStats.values())
-            .filter(r => r.count > 0)
-            .sort((a, b) => b.avgTime - a.avgTime)
-            .slice(0, config.maxRoutes);
+        return getRouteLists().slowestRoutes;
     }
 
     /** Routes with the most errors. */
     function getErrorRoutes(): RouteStats[] {
-        return Array.from(state.routeStats.values())
-            .filter(r => r.errors > 0)
-            .sort((a, b) => b.errors - a.errors)
-            .slice(0, config.maxRoutes);
+        return getRouteLists().errorRoutes;
     }
 
-    /** Current error rate as a percentage of all requests. */
+    /** Current error rate as a percentage of all requests. O(1). */
     function getErrorRate(): number {
-        const totalErrors = Array.from(state.routeStats.values())
-            .reduce((sum, r) => sum + r.errors, 0);
         if (state.totalRequests === 0) return 0;
-        return round((totalErrors / state.totalRequests) * 100);
+        return round((state.totalErrors / state.totalRequests) * 100);
     }
 
     /**
@@ -114,7 +195,11 @@ export function createStatsCore(
     function evictRoutesIfNeeded(): void {
         if (state.routeStats.size < config.maxTrackedRoutes) return;
         const oldest = state.routeStats.keys().next().value;
-        if (oldest !== undefined) state.routeStats.delete(oldest);
+        if (oldest === undefined) return;
+        // Evicted routes drop out of the error total too, matching the rate a
+        // full scan of the remaining routes would give.
+        state.totalErrors -= state.routeStats.get(oldest)?.errors ?? 0;
+        state.routeStats.delete(oldest);
     }
 
     /** Move a route to the most-recently-used end of the iteration order. */
@@ -141,7 +226,7 @@ export function createStatsCore(
         state.totalRequests++;
         state.activeConnections++;
 
-        const normalizedPath = config.normalizePath(path);
+        const normalizedPath = normalize(path);
         const key = `${method}:${normalizedPath}`;
 
         if (!state.routeStats.has(key)) {
@@ -167,6 +252,10 @@ export function createStatsCore(
         durationMs: number,
         statusCode: number
     ): void {
+        if (state.staleCompletions > 0) {
+            state.staleCompletions--;
+            return;
+        }
         state.activeConnections = Math.max(0, state.activeConnections - 1);
 
         state.totalResponseTime += durationMs;
@@ -182,7 +271,7 @@ export function createStatsCore(
         const codeStr = statusCode.toString();
         state.statusCodes[codeStr] = (state.statusCodes[codeStr] || 0) + 1;
 
-        const normalizedPath = config.normalizePath(path);
+        const normalizedPath = normalize(path);
         const key = `${method}:${normalizedPath}`;
         const stats = state.routeStats.get(key);
 
@@ -196,6 +285,7 @@ export function createStatsCore(
 
             if (statusCode >= 400) {
                 stats.errors++;
+                state.totalErrors++;
 
                 state.recentErrors.unshift({
                     timestamp: Date.now(),
@@ -220,38 +310,87 @@ export function createStatsCore(
         if (blocked) state.rateLimitBlocked++;
     }
 
-    /** Run configured named health checks (falls back to the single healthCheck). */
-    async function getHealthReport(): Promise<HealthReport> {
+    /** Whether the user supplied any health check (vs. the built-in placeholder). */
+    const healthConfigured = !!config.healthChecks || config.healthCheck !== DEFAULT_HEALTH_CHECK;
+
+    let healthCache: { at: number; report: HealthReport } | null = null;
+    let healthInFlight: Promise<HealthReport> | null = null;
+
+    /**
+     * Run configured named health checks (falls back to the single healthCheck).
+     * Concurrent callers share one in-flight run, and a result is reused for
+     * `maxAgeMs` (default HEALTH_CACHE_MS), so health checks cost the same with
+     * one viewer or fifty.
+     */
+    function getHealthReport(maxAgeMs: number = HEALTH_CACHE_MS): Promise<HealthReport> {
+        if (healthCache && Date.now() - healthCache.at < maxAgeMs) {
+            return Promise.resolve(healthCache.report);
+        }
+        if (healthInFlight) return healthInFlight;
+        healthInFlight = runHealthChecks()
+            .then((report) => {
+                healthCache = { at: Date.now(), report };
+                return report;
+            })
+            .finally(() => {
+                healthInFlight = null;
+            });
+        return healthInFlight;
+    }
+
+    const checkCache = new Map<() => Promise<HealthCheckResult>, { at: number; outcome: Promise<CheckOutcome> }>();
+
+    /**
+     * Call one health-check function, sharing the call between concurrent
+     * callers and reusing its outcome for HEALTH_CACHE_MS. Both the health
+     * report and the Node snapshot's `database` field go through here, so a
+     * single `healthCheck` runs once per window no matter who asks.
+     * Never rejects.
+     */
+    function runCheck(fn: () => Promise<HealthCheckResult>, label: string): Promise<CheckOutcome> {
+        const hit = checkCache.get(fn);
+        if (hit && Date.now() - hit.at < HEALTH_CACHE_MS) return hit.outcome;
+        const start = performance.now();
+        const elapsed = () => round(performance.now() - start);
+        const outcome = withTimeout(fn, config.healthCheckTimeout, label).then(
+            (result): CheckOutcome => ({ result, elapsedMs: elapsed() }),
+            (error): CheckOutcome => ({ error, elapsedMs: elapsed() })
+        );
+        checkCache.set(fn, { at: Date.now(), outcome });
+        return outcome;
+    }
+
+    async function runHealthChecks(): Promise<HealthReport> {
         const checks = config.healthChecks
             ? Object.entries(config.healthChecks)
             : ([['database', config.healthCheck]] as [string, () => Promise<HealthCheckResult>][]);
 
         const results: NamedHealthResult[] = await Promise.all(
             checks.map(async ([name, fn]) => {
-                try {
-                    const start = performance.now();
-                    const r = await fn();
+                const { result: r, error, elapsedMs } = await runCheck(fn, `health check "${name}"`);
+                if (r) {
                     return {
                         name: r.name || name,
                         connected: r.connected,
                         // `??` not `||`: a check legitimately reporting 0 ms must
                         // not be overwritten with our own measurement.
-                        latencyMs: r.latencyMs ?? round(performance.now() - start),
+                        latencyMs: r.latencyMs ?? elapsedMs,
                         details: r.details
                     };
-                } catch (err) {
-                    return {
-                        name,
-                        connected: false,
-                        latencyMs: 0,
-                        details: { error: err instanceof Error ? err.message : String(err) }
-                    };
                 }
+                return {
+                    name,
+                    connected: false,
+                    // How long we waited — for a timeout, that's the timeout.
+                    latencyMs: elapsedMs,
+                    details: { error: error instanceof Error ? error.message : String(error) }
+                };
             })
         );
 
         return {
             status: results.every(r => r.connected) ? 'ok' : 'degraded',
+            configured: healthConfigured,
             uptime: options.uptimeSeconds(),
             timestamp: Date.now(),
             checks: results
@@ -263,6 +402,7 @@ export function createStatsCore(
      * own platform-specific histories.
      */
     function resetCounters(): void {
+        state.staleCompletions += state.activeConnections;
         state.requestCount = 0;
         state.lastRequestCount = 0;
         state.totalResponseTime = 0;
@@ -275,6 +415,9 @@ export function createStatsCore(
         state.responseTimeSamples = [];
         state.rateLimitBlocked = 0;
         state.rateLimitTotal = 0;
+        state.totalErrors = 0;
+        healthCache = null;
+        checkCache.clear();
     }
 
     return {
@@ -282,6 +425,7 @@ export function createStatsCore(
         getTopRoutes,
         getSlowestRoutes,
         getErrorRoutes,
+        getRouteLists,
         getErrorRate,
         evictRoutesIfNeeded,
         addToHistory,
@@ -289,6 +433,8 @@ export function createStatsCore(
         trackRequestComplete,
         trackRateLimitEvent,
         getHealthReport,
+        runCheck,
+        healthConfigured,
         resetCounters
     };
 }

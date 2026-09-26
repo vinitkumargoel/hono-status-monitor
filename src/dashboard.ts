@@ -10,7 +10,8 @@ import {
     DEFAULT_CHARTJS_URL,
     DEFAULT_ADAPTER_URL,
     chartScriptTags,
-    clientScript
+    clientScript,
+    inlineScriptOpen
 } from './dashboard-assets.js';
 
 /** Cards only the Node dashboard renders (system, health, process, workers). */
@@ -18,17 +19,6 @@ const NODE_CSS = `        .status-badge.connected { background: #dcfce7; color: 
         .status-badge.disconnected { background: #fee2e2; color: #991b1b; }
         .dark .status-badge.connected { background: #14532d; color: #86efac; }
         .dark .status-badge.disconnected { background: #7f1d1d; color: #fca5a5; }
-        /* Database & Health */
-        .health-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
-        .health-item { padding: 12px; background: var(--bg-secondary); border-radius: 8px; text-align: center; }
-        .health-item .label { font-size: 10px; color: var(--text-muted); text-transform: uppercase; }
-        .health-item .value { font-size: 16px; font-weight: 600; margin-top: 4px; }
-        .health-item .status { display: inline-block; padding: 2px 8px; border-radius: 4px; font-size: 10px; font-weight: 600; margin-top: 4px; }
-        .health-item .status.ok { background: #dcfce7; color: #166534; }
-        .health-item .status.error { background: #fee2e2; color: #991b1b; }
-        .dark .health-item .status.ok { background: #14532d; color: #86efac; }
-        .dark .health-item .status.error { background: #7f1d1d; color: #fca5a5; }
-
         /* Process Info */
         .process-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; }
         .process-item { padding: 10px; background: var(--bg-secondary); border-radius: 6px; }
@@ -36,7 +26,7 @@ const NODE_CSS = `        .status-badge.connected { background: #dcfce7; color: 
         .process-item .value { font-size: 13px; font-weight: 500; margin-top: 2px; }
 
         @media (max-width: 640px) {
-            .health-grid, .process-grid { grid-template-columns: repeat(2, 1fr); }
+            .process-grid { grid-template-columns: repeat(2, 1fr); }
         }`;
 
 /**
@@ -49,7 +39,8 @@ export function generateDashboard({
     pollingInterval = 1000,
     chartjsUrl = DEFAULT_CHARTJS_URL,
     chartAdapterUrl = DEFAULT_ADAPTER_URL,
-    inlineCharts = false
+    inlineCharts = false,
+    nonce
 }: DashboardProps): string {
     const safeTitle = escapeHtml(title);
     const safeHostname = escapeHtml(hostname);
@@ -74,7 +65,7 @@ ${NODE_CSS}
                 <div class="subtitle">${safeHostname}</div>
             </div>
             <div class="header-controls">
-                <button class="theme-toggle" onclick="toggleTheme()" title="Toggle dark mode">🌓</button>
+                <button class="theme-toggle" id="themeToggle" type="button" title="Toggle dark mode" aria-label="Toggle dark mode">🌓</button>
                 <div class="status-badge connected" id="connBadge">
                     <span id="connText">Polling</span>
                 </div>
@@ -158,12 +149,12 @@ ${NODE_CSS}
         </div>
 
         <div class="section-title">Health Checks</div>
+        <div class="health-grid" id="healthList">
+            <div class="health-empty">Loading…</div>
+        </div>
+
+        <div class="section-title">Heap</div>
         <div class="health-grid">
-            <div class="health-item">
-                <div class="label">Database</div>
-                <div class="value" id="dbLatency">-</div>
-                <div class="status" id="dbStatus">-</div>
-            </div>
             <div class="health-item">
                 <div class="label">Heap Total</div>
                 <div class="value"><span id="heapTotal">0</span>MB</div>
@@ -183,7 +174,7 @@ ${NODE_CSS}
         </div>
     </div>
 
-    <script>
+    ${inlineScriptOpen(nonce)}
 ${clientScript(inlineCharts, pollingInterval)}
     </script>
 </body>

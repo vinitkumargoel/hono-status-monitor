@@ -10,7 +10,10 @@ export interface StatusMonitorConfig {
     path?: string;
     /** Dashboard title (default: 'Server Status') */
     title?: string;
-    /** Socket.io path - kept for backwards compatibility (default: '/status/socket.io') */
+    /**
+     * @deprecated Unused since the switch to polling; accepted and ignored so
+     * existing configs keep compiling. Will be removed in 2.0.
+     */
     socketPath?: string;
     /** Dashboard polling interval in milliseconds (default: 1000 for Node.js, 5000 for edge) */
     pollingInterval?: number;
@@ -37,6 +40,13 @@ export interface StatusMonitorConfig {
      * Each is run in parallel; the endpoint returns 503 if any required check fails.
      */
     healthChecks?: Record<string, () => Promise<HealthCheckResult>>;
+    /**
+     * Give up on a health check after this many milliseconds and report it as
+     * disconnected, so one hung dependency can't stall `/health` or the
+     * dashboard. `0` disables the timeout (default: 0 — no timeout; this
+     * becomes 5000 in 2.0).
+     */
+    healthCheckTimeout?: number;
     /** Custom path normalization function */
     normalizePath?: (path: string) => string;
     /** Enable cluster mode for PM2/multi-process aggregation (auto-detected if not set) */
@@ -62,6 +72,16 @@ export interface StatusMonitorConfig {
      * (no external scripts). Default: false.
      */
     inlineCharts?: boolean;
+    /**
+     * Send a nonce-based Content-Security-Policy with the dashboard (scripts
+     * limited to its own inline script and the configured Chart.js origin) and
+     * restrict framing to the same origin (`frame-ancestors 'self'`,
+     * `X-Frame-Options: SAMEORIGIN`). Off by default in 1.x because it blocks
+     * cross-origin embedding and proxy-injected scripts; it becomes the default
+     * in 2.0. `X-Content-Type-Options: nosniff`, `Referrer-Policy: no-referrer`
+     * and `Cache-Control: no-store` are always sent (default: false).
+     */
+    securityHeaders?: boolean;
     /**
      * Optional key-value store (Cloudflare KV / Durable Object stub / any object
      * implementing {@link StatusStore}) used on edge to aggregate request metrics
@@ -114,6 +134,11 @@ export interface NamedHealthResult extends HealthCheckResult {
  */
 export interface HealthReport {
     status: 'ok' | 'degraded';
+    /**
+     * False when no `healthCheck`/`healthChecks` was configured, in which case
+     * `checks` holds only the built-in always-healthy placeholder.
+     */
+    configured?: boolean;
     uptime: number;
     timestamp: number;
     checks: NamedHealthResult[];
@@ -315,7 +340,8 @@ export interface ChartData {
 export interface DashboardProps {
     hostname: string;
     uptime: string;
-    socketPath: string;
+    /** @deprecated Ignored; will be removed in 2.0. */
+    socketPath?: string;
     title: string;
     pollingInterval?: number;
     /** Override the Chart.js script URL */
@@ -324,6 +350,8 @@ export interface DashboardProps {
     chartAdapterUrl?: string;
     /** Use the built-in dependency-free inline SVG chart renderer */
     inlineCharts?: boolean;
+    /** CSP nonce stamped on the inline client script (set by the route handler) */
+    nonce?: string;
 }
 
 /**

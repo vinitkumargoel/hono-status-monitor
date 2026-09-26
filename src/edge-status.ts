@@ -13,10 +13,12 @@ export function createEdgeStatusMonitor(config: StatusMonitorConfig = {}) {
     return assembleStatusMonitor(monitor, {
         // Lazily loaded so the dashboard markup can be split out of the entry
         // chunk by bundlers that support code splitting.
-        renderDashboard: async (m, snapshot) => {
+        renderDashboard: async (m, snapshot, { nonce }) => {
             const { generateEdgeDashboard } = await import('./dashboard-edge.js');
             return generateEdgeDashboard({
                 hostname: snapshot.hostname,
+                platformLabel: snapshot.platform,
+                nonce,
                 uptime: m.formatUptime(snapshot.uptime),
                 title: m.config.title,
                 pollingInterval: m.config.pollingInterval,

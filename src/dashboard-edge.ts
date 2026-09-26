@@ -9,7 +9,8 @@ import {
     DEFAULT_CHARTJS_URL,
     DEFAULT_ADAPTER_URL,
     chartScriptTags,
-    clientScript
+    clientScript,
+    inlineScriptOpen
 } from './dashboard-assets.js';
 
 /** Edge-only banner and status badge. */
@@ -40,6 +41,10 @@ export interface EdgeDashboardProps {
     chartjsUrl?: string;
     chartAdapterUrl?: string;
     inlineCharts?: boolean;
+    /** Runtime name for the banner, e.g. "Cloudflare Workers" or "Deno". */
+    platformLabel?: string;
+    /** CSP nonce stamped on the inline client script. */
+    nonce?: string;
 }
 
 /**
@@ -52,7 +57,9 @@ export function generateEdgeDashboard({
     pollingInterval = 5000,
     chartjsUrl = DEFAULT_CHARTJS_URL,
     chartAdapterUrl = DEFAULT_ADAPTER_URL,
-    inlineCharts = false
+    inlineCharts = false,
+    platformLabel = 'Cloudflare Workers',
+    nonce
 }: EdgeDashboardProps): string {
     const safeTitle = escapeHtml(title);
     const safeHostname = escapeHtml(hostname);
@@ -78,7 +85,7 @@ ${EDGE_CSS}
                 <div class="subtitle">${safeHostname}</div>
             </div>
             <div class="header-controls">
-                <button class="theme-toggle" onclick="toggleTheme()" title="Toggle dark mode">🌓</button>
+                <button class="theme-toggle" id="themeToggle" type="button" title="Toggle dark mode" aria-label="Toggle dark mode">🌓</button>
                 <div class="status-badge edge" id="connBadge">
                     <span>☁️</span>
                     <span id="connText">Edge Mode</span>
@@ -87,7 +94,7 @@ ${EDGE_CSS}
         </header>
 
         <div class="edge-notice">
-            <strong>☁️ Running in Edge/Cloudflare Workers Mode</strong>
+            <strong>☁️ Running in edge mode (${escapeHtml(platformLabel)})</strong>
             System metrics (CPU, Memory, Heap) are not available. Dashboard updates via polling every ${pollingSeconds} second${pollingSeconds !== 1 ? 's' : ''}.
         </div>
 
@@ -147,9 +154,14 @@ ${EDGE_CSS}
         <div class="errors-panel" id="errorsPanel">
             <div style="color: var(--text-muted); font-size: 12px;">No errors recorded</div>
         </div>
+
+        <div class="section-title">Health Checks</div>
+        <div class="health-grid" id="healthList">
+            <div class="health-empty">Loading…</div>
+        </div>
     </div>
 
-    <script>
+    ${inlineScriptOpen(nonce)}
 ${clientScript(inlineCharts, pollingInterval)}
     </script>
 </body>

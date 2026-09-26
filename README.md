@@ -32,6 +32,8 @@ Real-time monitoring dashboard for **Hono.js** — one middleware, a zero-depend
 npm install hono-status-monitor          # + npm install @hono/node-server for Node
 ```
 
+The package is **ESM-only** (`"type": "module"`, no CommonJS build). From CommonJS, load it with `await import('hono-status-monitor')`.
+
 ## Quick start (Node.js / Bun)
 
 ```typescript
@@ -73,16 +75,18 @@ The bare `hono-status-monitor` specifier still resolves to the main (Node) entry
 
 ### Bundle size
 
-Roughly 31 KB minified (10 KB gzipped) for a Worker using the `/edge` entry, down from 73 KB in 1.0.x. The dashboard markup is loaded through a dynamic `import()`, so bundlers with code splitting turned on keep it out of the entry chunk — that drops the edge entry to about 13 KB.
+Roughly 38 KB minified (13 KB gzipped) for a Worker using the `/edge` entry, down from 73 KB in 1.0.x. CI enforces a size budget on both entries. The dashboard markup is loaded through a dynamic `import()`, so bundlers with code splitting turned on keep it out of the entry chunk — that drops the edge entry to about 13 KB.
 
 ## Endpoints
 
 | Endpoint | Description |
 |---|---|
 | `GET /status` | Dashboard HTML |
-| `GET /status/api/metrics` | `{ snapshot, charts }` JSON |
+| `GET /status/api/metrics` | `{ snapshot, charts, health? }` JSON (`health` only when checks are configured) |
 | `GET /status/api/stream` | SSE stream of the same JSON (Node/Bun only) |
-| `GET /status/health` | `{ status, uptime, checks }` — **200** if all checks pass, **503** if degraded |
+| `GET /status/health` | `{ status, configured, uptime, timestamp, checks }` — **200** if all checks pass, **503** if degraded |
+
+All endpoints send `Cache-Control: no-store`. `/health` results are shared between concurrent callers and reused for up to 1 s; the copy sent to dashboard polls for up to 5 s.
 | `GET /status/prometheus` | Prometheus/OpenMetrics text (disable via `prometheus: false`) |
 
 ## Configuration
@@ -91,13 +95,6 @@ Roughly 31 KB minified (10 KB gzipped) for a Worker using the `/edge` entry, dow
 statusMonitor({
   path: '/status',              // mount path (keep in sync with app.route)
   title: 'My App Status',
-  pollingInterval: 1000,        // dashboard refresh ms (Node 1000 / edge 5000) — now honored on Node too
-  updateInterval: 1000,         // metrics sampling ms
-  retentionSeconds: 60,         // chart history window
-  maxRecentErrors: 10,
-  maxRoutes: 10,                // routes shown in analytics
-  maxTrackedRoutes: 1000,       // hard cap on distinct routes in memory (LRU eviction)
-
   alerts: { cpu: 80, memory: 90, responseTime: 500, errorRate: 5, eventLoopLag: 100 },
 
   // Fired once on each OK <-> breached transition (wire to Slack/webhooks)
@@ -111,15 +108,77 @@ statusMonitor({
     mongo: async () => ({ connected: mongoose.connection.readyState === 1, latencyMs: 2 }),
     redis: async () => ({ connected: await redis.ping() === 'PONG', latencyMs: 1 }),
   },
-
-  prometheus: true,             // expose /prometheus
-  prometheusPrefix: 'hono',     // metric name prefix
-  chartjsUrl: '/vendor/chart.umd.js',   // self-host Chart.js under a strict CSP
-  normalizePath: (p) => p.replace(/\/users\/\d+/g, '/users/:id'),
+  healthCheckTimeout: 3000,     // a hung check reports "down" instead of stalling /health (off by default)
 });
 ```
 
-Instance methods: `getMetrics()`, `getCharts()`, `getHealth()`, `trackRateLimit(blocked)`, `resetStats()`, `stop()`, plus `monitor` (underlying instance).
+### All options
+
+| Option | Type | Node default | Edge default | Notes |
+|---|---|---|---|---|
+| `path` | `string` | `'/status'` | `'/status'` | Where you mount `routes`. Requests under it aren't counted as traffic. |
+| `title` | `string` | `'Server Status'` | `'Server Status'` | Dashboard heading and `<title>`. |
+| `pollingInterval` | `number` (ms) | `1000` | `5000` | Dashboard refresh; also the SSE push interval (at least 250). |
+| `updateInterval` | `number` (ms) | `1000` | `5000` | Metrics sampling. On edge, history rolls forward on requests at this cadence. |
+| `retentionSeconds` | `number` | `60` | `60` | Chart history window. |
+| `maxRecentErrors` | `number` | `10` | `10` | Errors kept in memory. |
+| `maxRoutes` | `number` | `10` | `10` | Length of the top / slowest / error route lists. |
+| `maxTrackedRoutes` | `number` | `1000` | `1000` | Hard cap on distinct routes in memory; least-recently-used are evicted. |
+| `alerts` | `{ cpu, memory, responseTime, errorRate, eventLoopLag }` | `80, 90, 500, 5, 100` | same | Thresholds. Only `responseTime` and `errorRate` can fire on edge. |
+| `onAlert` | `(event) => void` | – | – | Called on each OK ↔ breached transition. |
+| `authorize` | `(c) => boolean \| Promise<boolean>` | – | – | Guards every status route; falsy or throwing → 401. |
+| `healthCheck` | `() => Promise<HealthCheckResult>` | – | – | Single check, reported as `database`. Its `details.poolSize` / `availableConnections` feed the snapshot's `database` field. |
+| `healthChecks` | `Record<string, () => Promise<HealthCheckResult>>` | – | – | Named checks, run in parallel. Takes precedence over `healthCheck` for `/health`. |
+| `healthCheckTimeout` | `number` (ms) | `0` (none) | `0` (none) | Per-check timeout; a timed-out check reports down. Becomes 5000 in 2.0. |
+| `normalizePath` | `(path) => string` | see below | same | Groups paths into routes. |
+| `prometheus` | `boolean` | `true` | `true` | Expose `/prometheus`. |
+| `prometheusPrefix` | `string` | `'hono'` | `'hono'` | Metric name prefix. |
+| `chartjsUrl` / `chartAdapterUrl` | `string` | jsDelivr, pinned + SRI | same | Self-host Chart.js (a relative URL is allowed by the CSP as `'self'`). |
+| `inlineCharts` | `boolean` | `false` | `false` | Built-in renderer, no external scripts at all. |
+| `securityHeaders` | `boolean` | `false` | `false` | Nonce CSP + same-origin framing on the dashboard (see [Security](#security)). Becomes the default in 2.0. |
+| `clusterMode` | `boolean` | auto-detected | – | Aggregate PM2 / `node:cluster` workers. |
+| `store` | `StatusStore` | – | – | KV-shaped store for aggregating edge isolates (see below). No-op on Node. |
+| `instanceId` | `string` | – | random | Stable id for this isolate in `store`. |
+| `storeWriteInterval` | `number` (ms) | – | `60000` | How often an isolate writes to `store`. |
+| `socketPath` | `string` | – | – | **Deprecated**, ignored. |
+
+Numeric options that can't work (zero or negative intervals and caps, `NaN`, non-numeric strings) fall back to their default with a console warning. `undefined` means "use the default", and numeric strings such as `'120'` are accepted.
+
+**Default path normalization** collapses UUIDs to `:uuid`, 24-hex ObjectIds and all-digit segments to `:id`, then **keeps the first three path segments** — `/api/v1/users/42/posts` is tracked as `/api/v1/users`. Pass `normalizePath` to change that; you can build on the default:
+
+```typescript
+import { defaultNormalizePath } from 'hono-status-monitor';
+statusMonitor({ normalizePath: (p) => p.startsWith('/api/v2/') ? p.replace(/\/\d+/g, '/:id') : defaultNormalizePath(p) });
+```
+
+### The returned handle
+
+`statusMonitor()` returns `{ middleware, routes, getMetrics(), getCharts(), getHealth(), trackRateLimit(blocked), resetStats(), stop(), initSocket(), monitor, isEdgeMode }`. `initSocket()` is a no-op kept for compatibility; `monitor` is the underlying instance.
+
+Collection starts when `statusMonitor()` is called. The Node collector's timer is `unref`'d, so it never keeps a process alive on its own; call `stop()` to release it explicitly.
+
+### Exports
+
+| Export | Entry | Purpose |
+|---|---|---|
+| `statusMonitor` (also default export, `statusMonitorEdge`) | both | The factory above. |
+| `createMonitor` / `createEdgeMonitor` | main / both | Lower-level collectors without routes. |
+| `createMiddleware`, `createRequestTrackingMiddleware` | both | Tracking middleware for a collector. |
+| `generateDashboard` / `generateEdgeDashboard` | main / both | Render the dashboard HTML yourself. |
+| `toPrometheus`, `escapeHtml` | both | Formatters. |
+| `defaultNormalizePath` | both | The default route normalizer. |
+| `mergeSnapshots`, `generateInstanceId` | both | Edge cross-isolate helpers. |
+| `detectPlatform`, `isNodeEnvironment`, `isBunEnvironment`, `isCloudflareEnvironment`, `isEdgeEnvironment`, `getPlatformInfo` | both | Runtime detection. |
+| `setupClusterPrimary`, `isClusterWorker`, `isClusterMaster`, `getWorkerId`, `createClusterAggregator` | main | PM2 / cluster support. |
+| Types: `StatusMonitorConfig`, `MetricsSnapshot`, `ChartData`, `HealthReport`, `HealthCheckResult`, `StatusStore`, … | both | |
+
+### Aggregating edge isolates
+
+Each Workers isolate keeps its own counters. Pass a KV namespace (or anything implementing `get` / `put` / `list`) as `store` and the dashboard shows an approximate fleet-wide view:
+
+```typescript
+statusMonitor({ store: env.STATUS_KV, storeWriteInterval: 60_000 });
+```
 
 ## Prometheus / Grafana
 
@@ -167,8 +226,11 @@ Don't use `pm2 start app.js -i max` directly — isolated instances can't share 
 The dashboard exposes hostname, PID, routes and errors. Protect it in production:
 
 ```typescript
-// Built-in guard
-statusMonitor({ authorize: (c) => c.req.header('x-token') === process.env.STATUS_TOKEN });
+// Built-in guard — compare secrets in constant time (works on every runtime)
+import { timingSafeEqual } from 'hono/utils/buffer';
+statusMonitor({
+  authorize: (c) => timingSafeEqual(c.req.header('x-token') ?? '', process.env.STATUS_TOKEN!),
+});
 
 // …or Hono basic-auth
 import { basicAuth } from 'hono/basic-auth';
@@ -178,23 +240,15 @@ app.route('/status', monitor.routes);
 
 Route paths are HTML-escaped before rendering, so hostile request paths can't inject scripts into the dashboard.
 
+**Headers.** Every status response sends `Cache-Control: no-store`, and the dashboard also sends `X-Content-Type-Options: nosniff` and `Referrer-Policy: no-referrer`. The default Chart.js scripts carry Subresource Integrity hashes, and if the CDN is unreachable the dashboard falls back to its built-in renderer.
+
+Set `securityHeaders: true` to add a per-response nonce-based `Content-Security-Policy` (scripts limited to the dashboard's own inline script and the Chart.js origin) and same-origin framing (`frame-ancestors 'self'`, `X-Frame-Options: SAMEORIGIN`). It's off by default in 1.x because it blocks embedding the dashboard in a cross-origin iframe (Grafana, Backstage…) and scripts injected by proxies; it becomes the default in 2.0. If a custom `chartjsUrl` can't be expressed as a CSP source, the CSP is omitted rather than sent in a form that would block it.
+
 The status surface is **public by default** — anyone who can reach the mounted path gets the dashboard, `/api/metrics`, `/api/stream`, `/prometheus` and `/health`. Set `authorize` (or front it with your own auth) in any environment where that's not acceptable. Note that when `authorize` is set it also gates `/health`; if a load balancer or k8s liveness probe hits `/health` unauthenticated, either exempt that path in your own middleware or point the probe at an unguarded route.
 
-## Notes for existing users (1.1.0)
+## Upgrading
 
-Internals were restructured to cut bundle size; the documented `statusMonitor()` factory is unchanged. If you import internals directly:
-
-- **`createMiddleware` moved** from `middleware.js` to `request-tracking.js`. It is still exported from the package root and still works; only a deep path import into `dist/middleware.js` would break, and the `exports` map already blocked those.
-- **The dashboard module split** into `dashboard-assets` (shared CSS + client script), `dashboard` (Node) and `dashboard-edge` (edge). `generateDashboard` and `generateEdgeDashboard` are still exported from the package root.
-- **Health-check latency on edge** is measured with `performance.now()` and reported to two decimals, matching Node. It was whole milliseconds before.
-- **Route eviction is now genuinely least-recently-used.** At `maxTrackedRoutes`, eviction previously compared a `lastAccess` timestamp with 1 ms granularity; under real traffic several routes share the same millisecond, so it fell back to scan order and could evict the *most* recently used route. It now tracks recency directly. A health check that returns `latencyMs: 0` is also reported as `0` instead of being replaced by the measured time.
-
-### Notes for 1.0.9 users
-
-Two things worth a glance if you depend on internals:
-
-- **`getDatabaseStats` / `database` in the snapshot** now reports real pool numbers from your `healthCheck`'s `details.poolSize` / `details.availableConnections`, falling back to `0` instead of the previous hardcoded `10`. If your dashboards keyed off the old constant, surface the real values via `healthCheck`.
-- The exported **`StatusMonitor` type** dropped three members that the factory never actually returned (`start`, `getDashboard`, `config`) and added `getHealth`, `resetStats`, `isEdgeMode`, `routes`. Runtime behavior is unchanged; only hand-written `: StatusMonitor` annotations against the old shape need updating.
+See [CHANGELOG.md](./CHANGELOG.md). 1.1.1 changes no public API; the things you might notice are listed there under *Behavior changes*.
 
 ## Requirements
 

@@ -8,9 +8,9 @@
 // =============================================================================
 
 import { escapeHtml } from './format.js';
+import { DEFAULT_CHARTJS_URL, DEFAULT_ADAPTER_URL, DEFAULT_SRI } from './chart-cdn.js';
 
-export const DEFAULT_CHARTJS_URL = 'https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js';
-export const DEFAULT_ADAPTER_URL = 'https://cdn.jsdelivr.net/npm/chartjs-adapter-date-fns@3.0.0/dist/chartjs-adapter-date-fns.bundle.min.js';
+export { DEFAULT_CHARTJS_URL, DEFAULT_ADAPTER_URL };
 
 /** Styles common to both dashboards. */
 export const BASE_CSS = `        :root {
@@ -89,6 +89,21 @@ export const BASE_CSS = `        :root {
             padding: 6px 12px; border-radius: 16px;
             font-size: 11px; font-weight: 500;
         }
+
+        .status-badge.stale { background: #fef3c7; color: #92400e; }
+        .dark .status-badge.stale { background: #422006; color: #fcd34d; }
+        .status-badge.down, .health-item .status.error { background: #fee2e2; color: #991b1b; }
+        .dark .status-badge.down, .dark .health-item .status.error { background: #7f1d1d; color: #fca5a5; }
+
+        /* Health checks */
+        .health-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
+        .health-item { padding: 12px; background: var(--bg-secondary); border-radius: 8px; text-align: center; }
+        .health-item .label { font-size: 10px; color: var(--text-muted); text-transform: uppercase; overflow: hidden; text-overflow: ellipsis; }
+        .health-item .value { font-size: 16px; font-weight: 600; margin-top: 4px; }
+        .health-item .status { display: inline-block; padding: 2px 8px; border-radius: 4px; font-size: 10px; font-weight: 600; margin-top: 4px; }
+        .health-item .status.ok { background: #dcfce7; color: #166534; }
+        .dark .health-item .status.ok { background: #14532d; color: #86efac; }
+        .health-empty { grid-column: 1 / -1; font-size: 12px; color: var(--text-muted); }
 
         /* Stats Bar */
         .stats-bar {
@@ -173,6 +188,7 @@ export const BASE_CSS = `        :root {
             .stats-bar, .percentiles { grid-template-columns: repeat(2, 1fr); }
             .routes-grid { grid-template-columns: 1fr; }
             .status-codes { grid-template-columns: repeat(3, 1fr); }
+            .health-grid { grid-template-columns: repeat(2, 1fr); }
         }`;
 
 /**
@@ -190,6 +206,10 @@ export function clientScript(inlineCharts: boolean, pollingInterval: number): st
                 document.body.classList.toggle('dark');
                 localStorage.setItem('statusDark', document.body.classList.contains('dark'));
             };
+            // Bound here rather than via an onclick attribute, which a nonce-based
+            // CSP would block.
+            var themeBtn = document.getElementById('themeToggle');
+            if (themeBtn) themeBtn.addEventListener('click', window.toggleTheme);
 
             var gridColor = isDark ? '#2a2a2a' : '#f0f0f0';
 
@@ -205,6 +225,13 @@ export function clientScript(inlineCharts: boolean, pollingInterval: number): st
 
             // Dependency-free inline renderer (no Chart.js / no CDN) when INLINE is true.
             var INLINE = ${inlineCharts ? 'true' : 'false'};
+            // If the Chart.js CDN is blocked (offline, CSP, corporate proxy) fall
+            // back to the inline renderer instead of throwing on the first chart
+            // and leaving every card at zero.
+            if (!INLINE && typeof Chart === 'undefined') {
+                INLINE = true;
+                console.warn('[status] Chart.js did not load; using the built-in chart renderer.');
+            }
 
             // This script is shared by the Node and edge dashboards, which render
             // different subsets of cards AND report different subsets of metrics.
@@ -257,13 +284,21 @@ export function clientScript(inlineCharts: boolean, pollingInterval: number): st
                 ctx.stroke();
             }
 
+            function inlineChart(el, color) { return { inline: true, canvas: el, color: color }; }
+
             function createChart(id, color) {
                 var el = document.getElementById(id);
                 if (!el) return null;
-                if (INLINE) { return { canvas: el, color: color }; }
-                var ctx = el.getContext('2d');
-                var config = JSON.parse(JSON.stringify(chartConfig));
-                return new Chart(ctx, { type: 'line', data: { datasets: [{ data: [], borderColor: color, fill: false }] }, options: config });
+                if (INLINE) return inlineChart(el, color);
+                try {
+                    var config = JSON.parse(JSON.stringify(chartConfig));
+                    var chart = new Chart(el.getContext('2d'), { type: 'line', data: { datasets: [{ data: [], borderColor: color, fill: false }] }, options: config });
+                    chart.hsmColor = color;
+                    return chart;
+                } catch (e) {
+                    // e.g. Chart.js loaded but its date adapter did not.
+                    return inlineChart(el, color);
+                }
             }
 
             // Canvases absent from this variant's markup yield null and are skipped.
@@ -278,11 +313,19 @@ export function clientScript(inlineCharts: boolean, pollingInterval: number): st
                 err: createChart('errChart', '#ef4444')
             };
 
-            function updateChart(chart, points) {
+            function updateChart(key, points) {
+                var chart = charts[key];
                 if (!chart || !points) return;
-                if (INLINE) { drawSpark(chart, points); return; }
-                chart.data.datasets[0].data = points.map(function(p) { return { x: new Date(p.timestamp), y: p.value }; });
-                chart.update('none');
+                if (chart.inline) { drawSpark(chart, points); return; }
+                try {
+                    chart.data.datasets[0].data = points.map(function(p) { return { x: new Date(p.timestamp), y: p.value }; });
+                    chart.update('none');
+                } catch (e) {
+                    // Chart.js failed mid-flight; swap this chart to the inline renderer.
+                    try { chart.destroy(); } catch (_) {}
+                    charts[key] = inlineChart(chart.canvas, chart.hsmColor);
+                    drawSpark(charts[key], points);
+                }
             }
 
             function formatUptime(s) {
@@ -337,6 +380,32 @@ export function clientScript(inlineCharts: boolean, pollingInterval: number): st
                 }).join('');
             }
 
+            function renderHealth(health) {
+                var el = document.getElementById('healthList');
+                if (!el) return;
+                // The server omits the health field entirely when no check is configured.
+                if (!health || !health.checks || health.configured === false) {
+                    el.innerHTML = '<div class="health-empty">No health checks configured</div>';
+                    return;
+                }
+                el.innerHTML = health.checks.map(function(c) {
+                    return '<div class="health-item"><div class="label" title="' + esc(c.name) + '">' + esc(c.name) + '</div>' +
+                        '<div class="value">' + fx(c.latencyMs, 1) + 'ms</div>' +
+                        '<div class="status ' + (c.connected ? 'ok' : 'error') + '">' + (c.connected ? 'Healthy' : 'Down') + '</div></div>';
+                }).join('');
+            }
+
+            // Connection badge: Live / Stale / Unauthorized / Offline, so a failing
+            // poll is visible instead of stale numbers passing for live ones.
+            var badge = document.getElementById('connBadge');
+            var badgeText = document.getElementById('connText');
+            var liveClass = badge ? badge.className : 'status-badge';
+            function setBadge(state, text, title) {
+                if (badge) badge.className = state === 'live' ? liveClass : 'status-badge ' + state;
+                if (badgeText) badgeText.textContent = text;
+                if (badge) badge.title = title || '';
+            }
+
             function applyAlertColors(alerts) {
                 setDanger('cpuVal', alerts.cpu);
                 setDanger('rtVal', alerts.responseTime);
@@ -344,87 +413,137 @@ export function clientScript(inlineCharts: boolean, pollingInterval: number): st
                 setDanger('errorRate', alerts.errorRate);
             }
 
+            function render(data) {
+                var s = data.snapshot, c = data.charts || {};
+                var pct = s.percentiles || {};
+
+                setNum('cpuVal', s.cpu, 1);
+                setNum('memVal', s.memoryMB, 0);
+                setNum('heapVal', s.heapUsedMB, 1);
+                setNum('loadVal', s.loadAvg, 2);
+                setNum('rtVal', s.responseTime, 1);
+                setNum('rpsVal', s.rps, 1);
+                setNum('lagVal', s.eventLoopLag, 1);
+                setNum('errRateVal', s.errorRate, 1);
+
+                setText('uptime', formatUptime(s.processUptime));
+                setText('totalReq', typeof s.totalRequests === 'number' ? s.totalRequests.toLocaleString() : '\\u2014');
+                setText('activeConn', s.activeConnections);
+                setNum('errorRate', s.errorRate, 1, '%');
+
+                setNum('pAvg', pct.avg, 1, 'ms');
+                setNum('p50', pct.p50, 1, 'ms');
+                setNum('p95', pct.p95, 1, 'ms');
+                setNum('p99', pct.p99, 1, 'ms');
+
+                updateChart('cpu', c.cpu);
+                updateChart('mem', c.memory);
+                updateChart('heap', c.heap);
+                updateChart('load', c.loadAvg);
+                updateChart('rt', c.responseTime);
+                updateChart('rps', c.rps);
+                updateChart('lag', c.eventLoopLag);
+                updateChart('err', c.errorRate);
+
+                renderRoutes('topRoutes', s.topRoutes, 'count', false);
+                renderRoutes('slowRoutes', s.slowestRoutes, 'avgTime', true);
+                renderRoutes('errRoutes', s.errorRoutes, 'errors', false);
+                renderWorkers(s.workers);
+
+                setText('s2xx', sumCodes(s.statusCodes, '2'));
+                setText('s3xx', sumCodes(s.statusCodes, '3'));
+                setText('s4xx', sumCodes(s.statusCodes, '4'));
+                setText('s5xx', sumCodes(s.statusCodes, '5'));
+                setText('rateLimited', s.rateLimitStats ? s.rateLimitStats.blocked : 0);
+
+                renderErrors(s.recentErrors);
+                applyAlertColors(s.alerts || {});
+                renderHealth(data.health);
+
+                setNum('heapTotal', s.heapTotalMB, 0);
+                if (s.gc) setNum('heapGrowth', s.gc.heapGrowthRate, 2);
+
+                setText('nodeVer', s.nodeVersion);
+                setText('platform', String(s.platform).split(' ')[0]);
+                setText('pid', s.pid);
+                setText('cpuCount', s.cpuCount);
+            }
+
+            var INTERVAL = ${pollingInterval};
+            var MAX_BACKOFF = 30000;
+            // A request that never answers must not stall polling for good.
+            var REQUEST_TIMEOUT = Math.max(10000, INTERVAL * 2);
+            var failures = 0, lastOk = 0, timer = null, inFlight = false;
+            var basePath = window.location.pathname.endsWith('/') ? window.location.pathname : window.location.pathname + '/';
+
+            // Chain polls with setTimeout: a slow response can't stack requests,
+            // failures back off, and a hidden tab stops polling altogether.
+            function schedule(delay) {
+                clearTimeout(timer);
+                if (document.hidden) return;
+                timer = setTimeout(fetchMetrics, delay);
+            }
+
             function fetchMetrics() {
-                var basePath = window.location.pathname.endsWith('/') ? window.location.pathname : window.location.pathname + '/';
-                fetch(basePath + 'api/metrics')
-                    .then(function(res) { return res.json(); })
+                if (inFlight) return;
+                inFlight = true;
+                var ctrl = typeof AbortController === 'function' ? new AbortController() : null;
+                var abortTimer = ctrl ? setTimeout(function() { ctrl.abort(); }, REQUEST_TIMEOUT) : null;
+                fetch(basePath + 'api/metrics', { cache: 'no-store', credentials: 'same-origin', signal: ctrl ? ctrl.signal : undefined })
+                    .then(function(res) {
+                        if (!res.ok) { var e = new Error('HTTP ' + res.status); e.status = res.status; throw e; }
+                        return res.json();
+                    })
                     .then(function(data) {
-                        var s = data.snapshot, c = data.charts || {};
-                        var pct = s.percentiles || {};
-
-                        setNum('cpuVal', s.cpu, 1);
-                        setNum('memVal', s.memoryMB, 0);
-                        setNum('heapVal', s.heapUsedMB, 1);
-                        setNum('loadVal', s.loadAvg, 2);
-                        setNum('rtVal', s.responseTime, 1);
-                        setNum('rpsVal', s.rps, 1);
-                        setNum('lagVal', s.eventLoopLag, 1);
-                        setNum('errRateVal', s.errorRate, 1);
-
-                        setText('uptime', formatUptime(s.processUptime));
-                        setText('totalReq', typeof s.totalRequests === 'number' ? s.totalRequests.toLocaleString() : '\\u2014');
-                        setText('activeConn', s.activeConnections);
-                        setNum('errorRate', s.errorRate, 1, '%');
-
-                        setNum('pAvg', pct.avg, 1, 'ms');
-                        setNum('p50', pct.p50, 1, 'ms');
-                        setNum('p95', pct.p95, 1, 'ms');
-                        setNum('p99', pct.p99, 1, 'ms');
-
-                        updateChart(charts.cpu, c.cpu);
-                        updateChart(charts.mem, c.memory);
-                        updateChart(charts.heap, c.heap);
-                        updateChart(charts.load, c.loadAvg);
-                        updateChart(charts.rt, c.responseTime);
-                        updateChart(charts.rps, c.rps);
-                        updateChart(charts.lag, c.eventLoopLag);
-                        updateChart(charts.err, c.errorRate);
-
-                        renderRoutes('topRoutes', s.topRoutes, 'count', false);
-                        renderRoutes('slowRoutes', s.slowestRoutes, 'avgTime', true);
-                        renderRoutes('errRoutes', s.errorRoutes, 'errors', false);
-                        renderWorkers(s.workers);
-
-                        setText('s2xx', sumCodes(s.statusCodes, '2'));
-                        setText('s3xx', sumCodes(s.statusCodes, '3'));
-                        setText('s4xx', sumCodes(s.statusCodes, '4'));
-                        setText('s5xx', sumCodes(s.statusCodes, '5'));
-                        setText('rateLimited', s.rateLimitStats ? s.rateLimitStats.blocked : 0);
-
-                        renderErrors(s.recentErrors);
-                        applyAlertColors(s.alerts || {});
-
-                        if (s.database) {
-                            setNum('dbLatency', s.database.latencyMs, 1, 'ms');
-                            setText('dbStatus', s.database.connected ? 'Connected' : 'Disconnected');
-                            var dbEl = document.getElementById('dbStatus');
-                            if (dbEl) dbEl.className = 'status ' + (s.database.connected ? 'ok' : 'error');
-                        }
-                        setNum('heapTotal', s.heapTotalMB, 0);
-                        if (s.gc) setNum('heapGrowth', s.gc.heapGrowthRate, 2);
-
-                        setText('nodeVer', s.nodeVersion);
-                        setText('platform', String(s.platform).split(' ')[0]);
-                        setText('pid', s.pid);
-                        setText('cpuCount', s.cpuCount);
+                        failures = 0;
+                        lastOk = Date.now();
+                        try { render(data); } catch (e) { console.error('Failed to render metrics:', e); }
+                        setBadge('live', 'Live', 'Updated ' + new Date(lastOk).toLocaleTimeString());
                     })
                     .catch(function(err) {
+                        failures++;
                         console.error('Failed to fetch metrics:', err);
+                        var since = lastOk ? 'Last update ' + new Date(lastOk).toLocaleTimeString() : 'No data received yet';
+                        if (err && (err.status === 401 || err.status === 403)) {
+                            setBadge('down', 'Unauthorized', since);
+                        } else if (lastOk) {
+                            setBadge('stale', 'Stale · ' + Math.round((Date.now() - lastOk) / 1000) + 's', since);
+                        } else {
+                            setBadge('down', err && err.status ? 'Error ' + err.status : 'Offline', since);
+                        }
+                    })
+                    .then(function() {
+                        clearTimeout(abortTimer);
+                        inFlight = false;
+                        schedule(failures ? Math.min(INTERVAL * Math.pow(2, failures), MAX_BACKOFF) : INTERVAL);
                     });
             }
 
-            // Initial fetch
-            fetchMetrics();
+            document.addEventListener('visibilitychange', function() {
+                clearTimeout(timer);
+                if (!document.hidden) fetchMetrics();
+            });
 
-            // Poll at the configured interval
-            setInterval(fetchMetrics, ${pollingInterval});
+            fetchMetrics();
         })();`;
+}
+
+/** One external script tag, with SRI when the URL is a pinned default. */
+function scriptTag(url: string): string {
+    const sri = DEFAULT_SRI[url];
+    const integrity = sri ? ` integrity="${sri}" crossorigin="anonymous"` : '';
+    return `<script src="${escapeHtml(url)}"${integrity}></script>`;
 }
 
 /** Chart.js + date adapter script tags, omitted when charts render inline. */
 export function chartScriptTags(inlineCharts: boolean, chartjsUrl: string, chartAdapterUrl: string): string {
     return inlineCharts
         ? ''
-        : `<script src="${escapeHtml(chartjsUrl)}"></script>
-    <script src="${escapeHtml(chartAdapterUrl)}"></script>`;
+        : `${scriptTag(chartjsUrl)}
+    ${scriptTag(chartAdapterUrl)}`;
+}
+
+/** Opening tag for the inline client script, carrying the CSP nonce if any. */
+export function inlineScriptOpen(nonce?: string): string {
+    return nonce ? `<script nonce="${escapeHtml(nonce)}">` : '<script>';
 }

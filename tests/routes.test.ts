@@ -14,7 +14,7 @@ function fakeMonitor(over: Partial<{ prometheus: boolean }> = {}) {
         },
         getMetricsSnapshot: async () => snapshot,
         getChartData: () => charts,
-        getHealthReport: async (): Promise<HealthReport> => ({ status: 'ok', checks: [], uptime: 1 } as HealthReport)
+        getHealthReport: async (): Promise<HealthReport> => ({ status: 'ok', checks: [], uptime: 1, timestamp: 0 })
     };
 }
 

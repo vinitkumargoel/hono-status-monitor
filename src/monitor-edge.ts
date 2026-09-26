@@ -16,7 +16,9 @@ import type {
 } from './types.js';
 import { calculatePercentiles, defaultNormalizePath, formatUptime, round } from './metrics-utils.js';
 import { persistSnapshot, loadPeerSnapshots, mergeSnapshots, generateInstanceId } from './edge-store.js';
-import { createStatsCore } from './stats-core.js';
+import { createStatsCore, DEFAULT_HEALTH_CHECK } from './stats-core.js';
+import { mergeConfig, sanitizeConfig } from './config.js';
+import { detectPlatform } from './platform.js';
 
 // Default configuration for edge environments
 const DEFAULT_EDGE_CONFIG: Required<StatusMonitorConfig> = {
@@ -36,7 +38,8 @@ const DEFAULT_EDGE_CONFIG: Required<StatusMonitorConfig> = {
         errorRate: 5,
         eventLoopLag: 100 // Not available in edge
     },
-    healthCheck: async () => ({ connected: true, latencyMs: 0 }),
+    healthCheck: DEFAULT_HEALTH_CHECK,
+    healthCheckTimeout: 0, // no timeout unless configured
     healthChecks: undefined as unknown as Record<string, () => Promise<HealthCheckResult>>,
     normalizePath: (path: string) => path,
     clusterMode: false, // Not supported in edge
@@ -47,6 +50,7 @@ const DEFAULT_EDGE_CONFIG: Required<StatusMonitorConfig> = {
     chartjsUrl: undefined as unknown as string,
     chartAdapterUrl: undefined as unknown as string,
     inlineCharts: false,
+    securityHeaders: false,
     store: undefined as unknown as StatusStore,
     instanceId: undefined as unknown as string,
     storeWriteInterval: 60000
@@ -58,13 +62,12 @@ const DEFAULT_EDGE_CONFIG: Required<StatusMonitorConfig> = {
  */
 export function createEdgeMonitor(userConfig: StatusMonitorConfig = {}) {
     // Merge configuration
-    const config: Required<StatusMonitorConfig> = {
-        ...DEFAULT_EDGE_CONFIG,
-        ...userConfig,
-        alerts: { ...DEFAULT_EDGE_CONFIG.alerts, ...userConfig.alerts },
+    const config: Required<StatusMonitorConfig> = sanitizeConfig(mergeConfig(DEFAULT_EDGE_CONFIG, userConfig, {
         normalizePath: userConfig.normalizePath || defaultNormalizePath,
         clusterMode: false // Never in cluster mode on edge
-    };
+    }), DEFAULT_EDGE_CONFIG);
+
+    const runtime = describeEdgeRuntime();
 
     // In-memory metrics storage
     let responseTimeHistory: MetricDataPoint[] = [];
@@ -188,6 +191,7 @@ export function createEdgeMonitor(userConfig: StatusMonitorConfig = {}) {
         updateMetricsIfNeeded();
 
         const uptimeSeconds = Math.round((Date.now() - startTime) / 1000);
+        const routeLists = core.getRouteLists();
 
         return {
             timestamp: Date.now(),
@@ -212,16 +216,16 @@ export function createEdgeMonitor(userConfig: StatusMonitorConfig = {}) {
             activeConnections: state.activeConnections,
             eventLoopLag: 0, // Not available in edge
             // Platform info
-            hostname: 'cloudflare-worker',
-            platform: 'Cloudflare Workers',
+            hostname: runtime.hostname,
+            platform: runtime.label,
             nodeVersion: 'N/A',
             pid: 0,
             cpuCount: 0,
             // Analytics - available
             percentiles: calculatePercentiles(state.responseTimeSamples),
-            topRoutes: core.getTopRoutes(),
-            slowestRoutes: core.getSlowestRoutes(),
-            errorRoutes: core.getErrorRoutes(),
+            topRoutes: routeLists.topRoutes,
+            slowestRoutes: routeLists.slowestRoutes,
+            errorRoutes: routeLists.errorRoutes,
             recentErrors: [...state.recentErrors],
             alerts: checkAlerts(),
             // Not available metrics
@@ -324,6 +328,7 @@ export function createEdgeMonitor(userConfig: StatusMonitorConfig = {}) {
         getMetricsSnapshot,
         getChartData,
         getHealthReport: core.getHealthReport,
+        healthConfigured: core.healthConfigured,
         resetStats,
         start,
         stop,
@@ -332,6 +337,23 @@ export function createEdgeMonitor(userConfig: StatusMonitorConfig = {}) {
         isEdgeMode: true,
         get io() { return null; }
     };
+}
+
+/**
+ * Name the edge runtime for the snapshot and dashboard. Cloudflare keeps the
+ * values it has always reported; Deno and Vercel Edge were previously
+ * mislabelled as Cloudflare.
+ */
+export function describeEdgeRuntime(): { hostname: string; label: string } {
+    if (detectPlatform() === 'cloudflare') {
+        return { hostname: 'cloudflare-worker', label: 'Cloudflare Workers' };
+    }
+    const g = globalThis as { Deno?: unknown; EdgeRuntime?: unknown };
+    if (typeof g.Deno !== 'undefined') return { hostname: 'deno', label: 'Deno' };
+    if (typeof g.EdgeRuntime !== 'undefined') return { hostname: 'vercel-edge', label: 'Vercel Edge' };
+    // Unknown edge runtimes (and Node/Bun importing the edge entry directly)
+    // keep the historical Cloudflare label, so nothing changes for them.
+    return { hostname: 'cloudflare-worker', label: 'Cloudflare Workers' };
 }
 
 export type EdgeMonitor = ReturnType<typeof createEdgeMonitor>;
