@@ -12,6 +12,8 @@ const app = new Hono();
 
 const monitor = statusMonitor({
     title: 'Bun App Status',
+    // Open locally, 403 in production until you add `authorize`.
+    publicAccess: process.env.NODE_ENV !== 'production',
     groupBy: 'route',
     ignorePaths: ['/favicon.ico']
 });

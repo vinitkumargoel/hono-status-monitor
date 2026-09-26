@@ -1,4 +1,4 @@
-// The public handle returned by statusMonitor(): every method, on both entries.
+// The public handle returned by statusMonitor({ publicAccess: true }): every method, on both entries.
 import { describe, it, expect, vi, afterEach } from 'vitest';
 import { Hono } from 'hono';
 import { statusMonitor } from '../src/index';
@@ -13,7 +13,7 @@ describe.each([
 ] as const)('%s handle', (_, make, edge) => {
     it('tracks traffic through the middleware and exposes it on every accessor', async () => {
         vi.spyOn(console, 'log').mockImplementation(() => {});
-        const monitor = make({ path: '/status' });
+        const monitor = make({ path: '/status', publicAccess: true });
         const app = new Hono();
         app.use('*', monitor.middleware);
         app.route('/status', monitor.routes);
@@ -37,7 +37,6 @@ describe.each([
 
         monitor.resetStats();
         expect((await monitor.getMetrics()).totalRequests).toBe(0);
-        expect(monitor.initSocket()).toBeNull();
         monitor.stop();
     });
 
@@ -56,7 +55,7 @@ describe.each([
 describe('edge entry aliases', () => {
     it('exports statusMonitorEdge and a default that build edge monitors', () => {
         vi.spyOn(console, 'log').mockImplementation(() => {});
-        expect(statusMonitorEdge({}).isEdgeMode).toBe(true);
+        expect(statusMonitorEdge({ publicAccess: true }).isEdgeMode).toBe(true);
         expect(defaultEdge({}).isEdgeMode).toBe(true);
     });
 });
@@ -73,5 +72,48 @@ describe('statusMonitor platform branch', () => {
         vi.stubGlobal('process', { versions: {}, env: {} });
         const { statusMonitor: fresh } = await import('../src/index');
         expect(fresh({}).isEdgeMode).toBe(true);
+    });
+});
+
+describe('lifecycle', () => {
+    it('has no side effects until the first request, and stop() sticks until start()', async () => {
+        const spy = vi.spyOn(globalThis, 'setInterval');
+        const fresh = statusMonitor({ publicAccess: true, logger: false });
+        expect(spy).not.toHaveBeenCalled();
+
+        const app = new Hono();
+        app.use('*', fresh.middleware);
+        app.get('/x', (c) => c.text('x'));
+        await app.request('/x');
+        await app.request('/x');
+        expect(spy).toHaveBeenCalledTimes(1);
+
+        fresh.stop();
+        await app.request('/x');
+        expect(spy).toHaveBeenCalledTimes(1);
+
+        fresh.start();
+        expect(spy).toHaveBeenCalledTimes(2);
+        fresh.stop();
+    });
+
+    it('starts when a status route is hit first', async () => {
+        const spy = vi.spyOn(globalThis, 'setInterval');
+        const monitor = statusMonitor({ publicAccess: true, logger: false });
+        await monitor.routes.request('/health');
+        expect(spy).toHaveBeenCalledTimes(1);
+        monitor.stop();
+    });
+});
+
+describe('lazy start triggers', () => {
+    it('starts on the first metrics read, but not on a refused status request', async () => {
+        const spy = vi.spyOn(globalThis, 'setInterval');
+        const closed = statusMonitor({ logger: false });
+        expect((await closed.routes.request('/health')).status).toBe(403);
+        expect(spy).not.toHaveBeenCalled();
+        await closed.getMetrics();
+        expect(spy).toHaveBeenCalledTimes(1);
+        closed.stop();
     });
 });

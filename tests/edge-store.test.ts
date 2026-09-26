@@ -139,7 +139,7 @@ describe('edge monitor with store', () => {
         // Seed a peer directly.
         await persistSnapshot(store, 'peer', snap({ rps: 100, totalRequests: 999, statusCodes: { '200': 999 } }), 120);
 
-        const monitor = createEdgeMonitor({ store, instanceId: 'me', storeWriteInterval: 0 });
+        const monitor = createEdgeMonitor({ store, instanceId: 'me', storeWriteInterval: 1 });
         monitor.trackRequest('/local', 'GET');
         monitor.trackRequestComplete('/local', 'GET', 5, 200);
 
@@ -169,7 +169,7 @@ describe('inline charts', () => {
 
     it('uses CDN by default', async () => {
         const { generateDashboard } = await import('../src/dashboard');
-        const html = generateDashboard({ hostname: 'h', uptime: '1s', title: 't', socketPath: '/x' });
+        const html = generateDashboard({ hostname: 'h', uptime: '1s', title: 't' });
         expect(html).toContain('cdn.jsdelivr.net');
         expect(html).toContain('var INLINE = false');
     });

@@ -10,8 +10,12 @@ import { gzipSync } from 'node:zlib';
 
 /** Minified bytes: 1.2.0 sizes plus ~7% headroom. */
 const BUDGETS = [
-    { entry: 'dist/index.js', label: 'main', max: 72_000 },
-    { entry: 'dist/index-edge.js', label: 'edge', max: 51_000 }
+    // 2.0: +~3.7 KB for config validation and custom metrics.
+    { entry: 'dist/index.js', label: 'main', max: 74_000 },
+    { entry: 'dist/index-edge.js', label: 'edge', max: 54_000 },
+    // Opt-in subpaths, kept out of the core entries.
+    { entry: 'dist/otel.js', label: 'otel', max: 3_000 },
+    { entry: 'dist/durable-object-store.js', label: 'do', max: 4_500 }
 ];
 
 let failed = false;

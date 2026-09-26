@@ -149,12 +149,12 @@ export function createClusterAggregator(options: { maxRoutes?: number; retention
     /** Append delta points to a stored series and trim it to the retention window. */
     function appendSeries(stored: MetricDataPoint[] | undefined, fresh: MetricDataPoint[]): MetricDataPoint[] {
         const base = stored ?? [];
-        const lastTs = base.length ? base[base.length - 1].timestamp : -Infinity;
+        const lastTs = base.at(-1)?.timestamp ?? -Infinity;
         const merged = base.concat(fresh.filter((p) => p.timestamp > lastTs));
-        const newest = merged.length ? merged[merged.length - 1].timestamp : 0;
+        const newest = merged.at(-1)?.timestamp ?? 0;
         const cutoff = newest - retentionMs;
         let start = 0;
-        while (start < merged.length && merged[start].timestamp < cutoff) start++;
+        while (start < merged.length && (merged[start]?.timestamp ?? Infinity) < cutoff) start++;
         return start ? merged.slice(start) : merged;
     }
 
@@ -206,9 +206,9 @@ export function createClusterAggregator(options: { maxRoutes?: number; retention
      */
     function cleanupStaleWorkers(): void {
         const now = Date.now();
-        for (const workerId of Object.keys(workerMetrics)) {
-            if (now - workerMetrics[parseInt(workerId, 10)].lastUpdate > WORKER_TIMEOUT_MS) {
-                delete workerMetrics[parseInt(workerId, 10)];
+        for (const [workerId, worker] of Object.entries(workerMetrics)) {
+            if (now - worker.lastUpdate > WORKER_TIMEOUT_MS) {
+                delete workerMetrics[Number(workerId)];
             }
         }
     }

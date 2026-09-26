@@ -3,10 +3,11 @@
 // Auth guard, /health, /prometheus and SSE stream — shared by Node & edge.
 // =============================================================================
 
-import type { Hono } from 'hono';
+import type { Context, Hono, MiddlewareHandler } from 'hono';
 import { toPrometheus } from './format.js';
 import type { MetricsSnapshot, ChartData, HealthReport } from './types.js';
 import type { RouteHistogram } from './stats-core.js';
+import type { MetricRegistry } from './custom-metrics.js';
 
 /** Status data is live; never let a proxy or browser cache it. */
 export const NO_STORE: Record<string, string> = { 'Cache-Control': 'no-store' };
@@ -18,24 +19,37 @@ interface CommonRouteMonitor {
         prometheusHistogram?: boolean;
         pollingInterval: number;
         maxStreamClients?: number;
-        authorize?: (c: any) => boolean | Promise<boolean>;
+        authorize?: (c: Context) => boolean | Promise<boolean>;
     };
     getMetricsSnapshot: () => Promise<MetricsSnapshot>;
     getChartData: () => ChartData;
     getHealthReport: (maxAgeMs?: number) => Promise<HealthReport>;
     healthConfigured?: boolean;
     getHistograms?: () => RouteHistogram[];
+    /** Edge monitors can't measure CPU/memory/heap/event loop. */
+    isEdgeMode?: boolean;
 }
 
+/** Body of the 403 sent when neither `authorize` nor `publicAccess` is set. */
+export const ACCESS_NOT_CONFIGURED =
+    'hono-status-monitor: the status routes are closed until you configure access. ' +
+    'Pass `authorize: (c) => boolean` to protect them, or `publicAccess: true` to serve them without auth.';
+
 /**
- * Build a Hono middleware that enforces `config.authorize`, or null if none set.
- * A falsy return (or thrown error) yields 401.
+ * Build the guard for the status routes:
+ * - `authorize` set: a falsy return (or thrown error) yields 401;
+ * - `publicAccess: true`: no guard (null);
+ * - neither: every request gets 403 explaining how to open the routes.
  */
 export function createAuthGuard(
-    authorize?: (c: any) => boolean | Promise<boolean>
-): ((c: any, next: () => Promise<void>) => Promise<Response | void>) | null {
-    if (!authorize) return null;
-    return async (c: any, next: () => Promise<void>) => {
+    authorize?: (c: Context) => boolean | Promise<boolean>,
+    publicAccess = false
+): MiddlewareHandler | null {
+    if (!authorize) {
+        if (publicAccess) return null;
+        return async (c) => c.text(ACCESS_NOT_CONFIGURED, 403, NO_STORE);
+    }
+    return async (c, next) => {
         let ok = false;
         try {
             ok = await authorize(c);
@@ -56,7 +70,7 @@ export function createAuthGuard(
 export function registerCommonRoutes(
     routes: Hono,
     monitor: CommonRouteMonitor,
-    options: { enableStream?: boolean } = {}
+    options: { enableStream?: boolean; metrics?: MetricRegistry } = {}
 ): void {
     // Health endpoint — 200 when all checks pass, 503 when degraded.
     routes.get('/health', async (c) => {
@@ -69,7 +83,8 @@ export function registerCommonRoutes(
         routes.get('/prometheus', async (c) => {
             const snapshot = await monitor.getMetricsSnapshot();
             const histograms = monitor.config.prometheusHistogram ? monitor.getHistograms?.() : undefined;
-            const body = toPrometheus(snapshot, monitor.config.prometheusPrefix, histograms);
+            let body = toPrometheus(snapshot, monitor.config.prometheusPrefix, histograms, { system: monitor.isEdgeMode !== true });
+            if (options.metrics?.size) body += options.metrics.toPrometheus(monitor.config.prometheusPrefix);
             return c.body(body, 200, {
                 ...NO_STORE,
                 'Content-Type': 'text/plain; version=0.0.4; charset=utf-8'

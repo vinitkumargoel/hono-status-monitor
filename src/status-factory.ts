@@ -5,11 +5,12 @@
 // =============================================================================
 
 import { Hono } from 'hono';
-import type { MetricsSnapshot, ChartData, HealthReport, StatusMonitorConfig } from './types.js';
+import type { MetricsSnapshot, ChartData, HealthReport, StatusMonitor, StatusMonitorConfig } from './types.js';
 import { createRequestTrackingMiddleware } from './request-tracking.js';
-import { createAuthGuard, registerCommonRoutes, NO_STORE } from './routes.js';
+import { ACCESS_NOT_CONFIGURED, createAuthGuard, registerCommonRoutes, NO_STORE } from './routes.js';
 import { BASELINE_HEADERS, dashboardSecurityHeaders, generateNonce } from './security.js';
 import { DEFAULT_ADAPTER_URL, DEFAULT_CHARTJS_URL } from './chart-cdn.js';
+import { createMetricRegistry } from './custom-metrics.js';
 
 /**
  * The surface a monitor must expose to be assembled into a status monitor.
@@ -32,26 +33,10 @@ export interface AssemblableMonitor {
     formatUptime(seconds: number): string;
 }
 
-/**
- * The status surface is public unless `authorize` is set. That's documented,
- * but easy to miss, so say it once at startup when running in production.
- */
-function warnIfPublicInProduction(monitor: AssemblableMonitor): void {
-    const env = (globalThis as { process?: { env?: Record<string, string | undefined> } }).process?.env;
-    if (env?.NODE_ENV !== 'production') return;
-    monitor.logger?.warn(
-        `[hono-status-monitor] The status dashboard and APIs under "${monitor.config.path}" are public: ` +
-        'no `authorize` option is set. Set `authorize`, or put your own auth in front of the routes.'
-    );
-}
-
 /** Minimum age of the health data sent with dashboard polls. */
 const DASHBOARD_HEALTH_MAX_AGE_MS = 5000;
 
-export interface AssembleOptions<
-    M extends AssemblableMonitor,
-    I extends (server?: any) => unknown = (server?: any) => unknown
-> {
+export interface AssembleOptions<M extends AssemblableMonitor> {
     /**
      * Produce the dashboard HTML. Called per request, and awaited, so callers
      * can lazily `import()` the dashboard module instead of pulling ~27 KB of
@@ -66,14 +51,6 @@ export interface AssembleOptions<
     enableStream: boolean;
     /** Reported on the returned handle and used by consumers to branch. */
     isEdgeMode: boolean;
-    /**
-     * Backwards-compatible socket initializer. The argument is accepted and
-     * ignored — kept so existing `monitor.initSocket(server)` calls still type.
-     * Generic so each caller's exact signature/return type reaches the handle.
-     */
-    initSocket: I;
-    /** CSP nonce source; defaults to Web Crypto. */
-    generateNonce?: () => string;
 }
 
 /**
@@ -82,20 +59,33 @@ export interface AssembleOptions<
  * Route surface: `GET /` (dashboard), `GET /api/metrics`, plus `/health`,
  * `/prometheus` and optionally `/api/stream` via `registerCommonRoutes`.
  */
-export function assembleStatusMonitor<
-    M extends AssemblableMonitor,
-    I extends (server?: any) => unknown
->(
+export function assembleStatusMonitor<M extends AssemblableMonitor>(
     monitor: M,
-    options: AssembleOptions<M, I>
-) {
-    const middleware = createRequestTrackingMiddleware(monitor);
+    options: AssembleOptions<M>
+): StatusMonitor<M> {
+    // Collection starts on the first tracked request or status-route hit (or
+    // an explicit start()), not at construction, so creating a monitor has no
+    // side effects. stop() is final until start() is called again.
+    let state: 'idle' | 'running' | 'stopped' = 'idle';
+    const ensureStarted = () => {
+        if (state !== 'idle') return;
+        state = 'running';
+        monitor.start();
+    };
+
+    const metrics = createMetricRegistry((m) => monitor.logger?.warn(m));
+    const middleware = createRequestTrackingMiddleware({ ...monitor, start: ensureStarted });
     const routes = new Hono();
 
-    // Optional auth guard for the whole status surface.
-    const guard = createAuthGuard(monitor.config.authorize);
+    // The status surface is closed unless `authorize` or `publicAccess` is set.
+    const guard = createAuthGuard(monitor.config.authorize, monitor.config.publicAccess);
     if (guard) routes.use('*', guard);
-    else warnIfPublicInProduction(monitor);
+    // After the guard, so refused requests don't start collection.
+    routes.use('*', async (_c, next) => {
+        ensureStarted();
+        await next();
+    });
+    if (!monitor.config.authorize && !monitor.config.publicAccess) monitor.logger?.warn(ACCESS_NOT_CONFIGURED);
 
     // Script origins the dashboard may load, for the CSP.
     const cfg = monitor.config;
@@ -103,12 +93,11 @@ export function assembleStatusMonitor<
         ? []
         : [cfg.chartjsUrl ?? DEFAULT_CHARTJS_URL, cfg.chartAdapterUrl ?? DEFAULT_ADAPTER_URL];
 
-    const makeNonce = options.generateNonce ?? generateNonce;
 
     // Dashboard page
     routes.get('/', async (c) => {
         const snapshot = await monitor.getMetricsSnapshot();
-        const nonce = makeNonce();
+        const nonce = generateNonce();
         const html = await options.renderDashboard(monitor, snapshot, { nonce });
         const headers = cfg.securityHeaders
             ? dashboardSecurityHeaders(nonce, scriptUrls, c.req.url)
@@ -127,38 +116,42 @@ export function assembleStatusMonitor<
             monitor.getMetricsSnapshot(),
             monitor.healthConfigured ? monitor.getHealthReport(dashboardHealthAge) : undefined
         ]);
-        return c.json({ snapshot, charts: monitor.getChartData(), health }, 200, NO_STORE);
+        const custom = metrics.size ? metrics.list() : undefined;
+        return c.json({ snapshot, charts: monitor.getChartData(), health, custom }, 200, NO_STORE);
     });
 
     // /health, /prometheus and (optionally) /api/stream
-    registerCommonRoutes(routes, monitor, { enableStream: options.enableStream });
-
-    // Start metrics collection. Note this is a construction-time side effect: on
-    // Node it registers an interval that keeps the process alive until stop().
-    monitor.start();
+    registerCommonRoutes(routes, monitor, { enableStream: options.enableStream, metrics });
 
     return {
-        /** Hono middleware for tracking all requests */
         middleware,
-        /** Pre-configured Hono routes for dashboard and API */
         routes,
-        /** Initialize server transport (no-op on edge; kept for compatibility) */
-        initSocket: options.initSocket,
-        /** Track rate limit events for the dashboard */
+        start: () => {
+            state = 'running';
+            monitor.start();
+        },
+        stop: () => {
+            state = 'stopped';
+            monitor.stop();
+        },
         trackRateLimit: (blocked: boolean) => monitor.trackRateLimitEvent(blocked),
-        /** Get current metrics snapshot */
-        getMetrics: () => monitor.getMetricsSnapshot(),
-        /** Get chart data for all metrics */
-        getCharts: () => monitor.getChartData(),
-        /** Get the aggregated health report (same payload as GET /health) */
-        getHealth: () => monitor.getHealthReport(),
-        /** Reset all accumulated request/route/error counters */
+        // Reading metrics counts as use: start collecting if nothing has yet.
+        getMetrics: () => {
+            ensureStarted();
+            return monitor.getMetricsSnapshot();
+        },
+        getCharts: () => {
+            ensureStarted();
+            return monitor.getChartData();
+        },
+        getHealth: () => {
+            ensureStarted();
+            return monitor.getHealthReport();
+        },
         resetStats: () => monitor.resetStats(),
-        /** Stop metrics collection */
-        stop: () => monitor.stop(),
-        /** Access to the underlying monitor instance */
+        counter: metrics.counter,
+        gauge: metrics.gauge,
         monitor,
-        /** Whether running in edge mode */
         isEdgeMode: options.isEdgeMode
     };
 }

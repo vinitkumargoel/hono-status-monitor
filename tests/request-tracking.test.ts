@@ -1,3 +1,4 @@
+import type { Context } from 'hono';
 import { describe, it, expect, vi } from 'vitest';
 import { createRequestTrackingMiddleware, isMonitorPath } from '../src/request-tracking';
 
@@ -24,7 +25,7 @@ describe('request tracking middleware', () => {
         await expect(middleware({
             req: { path: '/api/fails', method: 'GET' },
             res: undefined
-        }, async () => {
+        } as unknown as Context, async () => {
             throw error;
         })).rejects.toThrow(error);
 
@@ -44,7 +45,7 @@ describe('request tracking middleware', () => {
         await middleware({
             req: { path: '/statuscheck', method: 'GET' },
             res: { status: 204 }
-        }, async () => {});
+        } as unknown as Context, async () => {});
 
         expect(monitor.trackRequest).toHaveBeenCalledWith('/statuscheck', 'GET');
         expect(monitor.trackRequestComplete).toHaveBeenCalledWith(

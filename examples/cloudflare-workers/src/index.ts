@@ -27,11 +27,14 @@ type App = Hono<{ Bindings: Env }>;
 function createApp(env: Env): App {
     const monitor = statusMonitor({
         title: 'Worker Status',
-        store: env.STATUS_KV,          // fleet-wide numbers across isolates
+        store: env.STATUS_KV,          // fleet-wide numbers across isolates (or durableObjectStore()
+                                       // from 'hono-status-monitor/durable-object' for strong consistency)
         storeWriteInterval: 60_000,    // one KV write per isolate per minute
         groupBy: 'route',              // group as /users/:id, not /users/1, /users/2...
         ignorePaths: ['/favicon.ico'],
-        // Every status route, /health included, requires the x-token header.
+        // Required since 2.0: without authorize (or publicAccess) every status
+        // route answers 403. Every status route, /health included, requires
+        // the x-token header.
         authorize: async (c) => {
             const token = env.STATUS_TOKEN;
             if (!token) return false;  // never compare against an empty secret

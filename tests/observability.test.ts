@@ -19,44 +19,58 @@ afterEach(() => {
 describe('logger', () => {
     it('routes the monitor\'s own messages through the given logger', () => {
         const { lines, logger } = recorder();
-        const monitor = createMonitor({ logger, updateInterval: -1 });
+        const monitor = createMonitor({ logger });
         monitor.start();
         monitor.stop();
-        expect(lines.some((l) => l.startsWith('warn') && l.includes('updateInterval'))).toBe(true);
         expect(lines).toContain('log 📊 Status monitor started');
+        statusMonitor({ logger });
+        expect(lines.some((l) => l.startsWith('warn') && l.includes('closed until you configure access'))).toBe(true);
     });
 
     it('is silent with logger: false', () => {
         const log = vi.spyOn(console, 'log');
         const warn = vi.spyOn(console, 'warn');
-        const monitor = createMonitor({ logger: false, updateInterval: -1 });
+        const monitor = createMonitor({ logger: false });
         monitor.start();
         monitor.stop();
+        statusMonitor({ logger: false });
         expect(log).not.toHaveBeenCalled();
         expect(warn).not.toHaveBeenCalled();
     });
 });
 
-describe('public-dashboard warning', () => {
-    it('warns once in production when authorize is not set', () => {
-        vi.stubEnv('NODE_ENV', 'production');
-        const { lines, logger } = recorder();
-        statusMonitor({ logger }).stop();
-        expect(lines.filter((l) => l.includes('are public'))).toHaveLength(1);
+describe('access control', () => {
+    const mounted = (config: Parameters<typeof statusMonitor>[0]) => {
+        const monitor = statusMonitor({ logger: false, ...config });
+        return new Hono().route('/status', monitor.routes);
+    };
+
+    it('closes every status route when neither authorize nor publicAccess is set', async () => {
+        const app = mounted({});
+        for (const path of ['/status', '/status/api/metrics', '/status/health', '/status/prometheus']) {
+            expect((await app.request(path)).status).toBe(403);
+        }
     });
 
-    it('stays quiet outside production or with authorize', () => {
+    it('serves them with publicAccess, or to requests authorize accepts', async () => {
+        expect((await mounted({ publicAccess: true }).request('/status/health')).status).toBe(200);
+        const guarded = mounted({ authorize: (c) => c.req.header('x-token') === 't' });
+        expect((await guarded.request('/status/health')).status).toBe(401);
+        expect((await guarded.request('/status/health', { headers: { 'x-token': 't' } })).status).toBe(200);
+    });
+
+    it('warns once at construction when access is not configured', () => {
         const { lines, logger } = recorder();
-        statusMonitor({ logger }).stop();
-        vi.stubEnv('NODE_ENV', 'production');
-        statusMonitor({ logger, authorize: () => true }).stop();
-        expect(lines.filter((l) => l.includes('are public'))).toHaveLength(0);
+        statusMonitor({ logger });
+        statusMonitor({ logger, publicAccess: true });
+        statusMonitor({ logger, authorize: () => true });
+        expect(lines.filter((l) => l.includes('closed until you configure access'))).toHaveLength(1);
     });
 });
 
 describe('prometheus histogram', () => {
     it('exposes cumulative latency buckets per method, route and status', async () => {
-        const monitor = statusMonitor({ logger: false, groupBy: 'route', prometheusHistogram: true });
+        const monitor = statusMonitor({ publicAccess: true, logger: false, groupBy: 'route', prometheusHistogram: true });
         const app = new Hono();
         app.use('*', monitor.middleware);
         app.route('/status', monitor.routes);
@@ -72,7 +86,7 @@ describe('prometheus histogram', () => {
     });
 
     it('is off unless prometheusHistogram is set', async () => {
-        const monitor = statusMonitor({ logger: false });
+        const monitor = statusMonitor({ publicAccess: true, logger: false });
         const app = new Hono();
         app.use('*', monitor.middleware);
         app.route('/status', monitor.routes);
@@ -123,5 +137,22 @@ describe('health check definitions', () => {
         const report = await monitor.getHealthReport();
         expect(report.status).toBe('degraded');
         expect(String(report.checks[0].details?.error)).toMatch(/timed out after 20ms/);
+    });
+});
+
+describe('prometheus system gauges', () => {
+    it('are omitted on edge, where they would always be zero', async () => {
+        const edge = await (await statusMonitor({ publicAccess: true, logger: false }).routes.request('/prometheus')).text();
+        expect(edge).not.toContain('hono_cpu_percent');
+        expect(edge).not.toContain('hono_heap_used_bytes');
+        expect(edge).not.toContain('hono_event_loop_lag_ms');
+        expect(edge).toContain('hono_requests_total');
+    });
+
+    it('are kept on Node', () => {
+        const monitor = createMonitor({ logger: false });
+        return monitor.getMetricsSnapshot().then((s) => {
+            expect(toPrometheus(s)).toContain('hono_cpu_percent');
+        });
     });
 });

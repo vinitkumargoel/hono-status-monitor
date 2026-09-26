@@ -240,7 +240,7 @@ export function createStatsCore(
         history.push({ timestamp: now, value });
 
         const cutoff = now - (config.retentionSeconds * 1000);
-        while (history.length > 0 && history[0].timestamp < cutoff) {
+        while ((history[0]?.timestamp ?? Infinity) < cutoff) {
             history.shift();
         }
     }
@@ -397,7 +397,7 @@ export function createStatsCore(
         h.sum += seconds;
         h.count++;
         for (let i = 0; i < HISTOGRAM_BUCKETS_SECONDS.length; i++) {
-            if (seconds <= HISTOGRAM_BUCKETS_SECONDS[i]) h.buckets[i]++;
+            if (seconds <= (HISTOGRAM_BUCKETS_SECONDS[i] ?? Infinity)) h.buckets[i] = (h.buckets[i] ?? 0) + 1;
         }
     }
 

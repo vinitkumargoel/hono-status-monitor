@@ -150,13 +150,13 @@ describe('cluster process helpers', () => {
 });
 
 describe('cluster monitor wiring', () => {
-    it('receives peer metrics after start() without initSocket(), and stops listening on stop()', async () => {
+    it('receives peer metrics after start(), and stops listening on stop()', async () => {
         const { createMonitor } = await import('../src/monitor');
         const before = process.listenerCount('message');
         const monitor = createMonitor({ clusterMode: true, logger: false });
         monitor.start();
         expect(process.listenerCount('message')).toBe(before + 1);
-        monitor.initSocket(); // idempotent: no second listener
+        monitor.start(); // idempotent: no second listener
         expect(process.listenerCount('message')).toBe(before + 1);
 
         process.emit('message' as never, { ...msg(7, { totalRequests: 5 }), deltaCapable: true } as never);

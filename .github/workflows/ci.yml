@@ -45,7 +45,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        runtime: [node-18, node-24, bun, deno]
+        runtime: [node-20, node-24, bun, deno]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -65,7 +65,7 @@ jobs:
       - if: startsWith(matrix.runtime, 'node-')
         uses: actions/setup-node@v4
         with:
-          node-version: ${{ matrix.runtime == 'node-18' && 18 || 24 }}
+          node-version: ${{ matrix.runtime == 'node-20' && 20 || 24 }}
       - if: startsWith(matrix.runtime, 'node-')
         run: node smoke.mjs
         working-directory: ${{ runner.temp }}/consumer

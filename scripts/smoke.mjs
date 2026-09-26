@@ -5,12 +5,14 @@
 // so resolution goes through the `exports` map and lands on dist/ — not src/,
 // which is all the unit tests exercise. Run from the repo (self-reference) or
 // from a scratch project with the packed tarball installed (what CI does).
-// Plain JS with no test runner so it also runs on Node 18 and Bun.
+// Plain JS with no test runner so it runs unchanged on Node, Bun and Deno.
 // =============================================================================
 
 import { Hono } from 'hono';
 import * as main from 'hono-status-monitor';
 import * as edge from 'hono-status-monitor/edge';
+import * as otel from 'hono-status-monitor/otel';
+import * as durableObject from 'hono-status-monitor/durable-object';
 
 const failures = [];
 const check = (label, ok) => {
@@ -27,7 +29,7 @@ console.log = ((log) => (...args) => {
 for (const [name, mod] of [['main', main], ['edge', edge]]) {
     const monitor = mod.statusMonitor({
         path: '/status',
-        securityHeaders: true,
+        publicAccess: true,
         healthChecks: { self: async () => ({ connected: true, latencyMs: 0 }) }
     });
     const app = new Hono();
@@ -59,6 +61,15 @@ for (const [name, mod] of [['main', main], ['edge', edge]]) {
 
     monitor.stop();
 }
+
+for (const [name, mod] of [['main', main], ['edge', edge]]) {
+    const closed = mod.statusMonitor({ logger: false });
+    check(`${name}: status routes are closed without authorize/publicAccess`, (await closed.routes.request('/health')).status === 403);
+}
+
+check('otel subpath exports the bridge', typeof otel.registerOtelMetrics === 'function');
+check('durable-object subpath exports the store', typeof durableObject.durableObjectStore === 'function' && typeof durableObject.StatusStoreObject === 'function');
+check('core entries leave the opt-in subpaths out', !('registerOtelMetrics' in main) && !('durableObjectStore' in edge));
 
 check('main entry keeps Node-only exports', typeof main.createMonitor === 'function');
 check('edge entry has no Node-only exports', !('createMonitor' in edge));
