@@ -113,6 +113,9 @@ describe('persist + load round-trip', () => {
         // A stray write sharing the prefix but not a valid snapshot.
         store.data.set('hsm:inst:junk', JSON.stringify({ hello: 'world' }));
         store.data.set('hsm:inst:broken', '{not json');
+        // Right shape, unusable numbers or containers.
+        store.data.set('hsm:inst:inf', JSON.stringify({ ...snap({}), rps: 'Infinity', totalRequests: -1 }));
+        store.data.set('hsm:inst:arr', JSON.stringify({ ...snap({}), topRoutes: 'nope' }));
 
         const peers = await loadPeerSnapshots(store, 'self');
         expect(peers).toHaveLength(1);

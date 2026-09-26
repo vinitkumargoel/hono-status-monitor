@@ -688,6 +688,8 @@ export function clientScript(inlineCharts: boolean, pollingInterval: number, opt
             function stopStream() {
                 clearTimeout(watchdog);
                 if (es) { es.close(); es = null; }
+                // The next connection must prove itself again (re-arms the watchdog).
+                streamOk = false;
             }
 
             document.addEventListener('visibilitychange', function() {

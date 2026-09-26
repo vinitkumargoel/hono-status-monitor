@@ -94,8 +94,9 @@ ${NODE_CSS}
             <div class="percentile-item"><div class="label">P99</div><div class="value" id="p99">0ms</div></div>
         </div>
 
-                <div class="range-select" id="rangeSelect" role="group" aria-label="Chart time range" hidden></div>
-        <div class="metric-row">     <div class="metric-info"><div class="metric-label">CPU</div><div class="metric-value"><span id="cpuVal">0</span><span class="metric-unit">%</span></div></div>
+        <div class="range-select" id="rangeSelect" role="group" aria-label="Chart time range" hidden></div>
+        <div class="metric-row">
+            <div class="metric-info"><div class="metric-label">CPU</div><div class="metric-value"><span id="cpuVal">0</span><span class="metric-unit">%</span></div></div>
             <div class="chart-container"><canvas id="cpuChart" role="img" aria-label="CPU usage over time"></canvas></div>
         </div>
         <div class="metric-row">

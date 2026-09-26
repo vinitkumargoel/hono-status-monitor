@@ -67,9 +67,10 @@ export interface StatusMonitorConfig {
      */
     ignorePaths?: Array<string | RegExp> | ((path: string) => boolean);
     /**
-     * Fraction of requests (0–1) whose timing is recorded in route stats and
-     * latency percentiles (default: 1). Request, status-code and error counts
-     * always include every request.
+     * Fraction of requests (0–1) recorded in per-route stats, latency
+     * percentiles and histograms (default: 1). The totals — request count,
+     * status codes and the overall error rate — always include every request;
+     * per-route counts and errors cover only the sampled share.
      */
     sampleRate?: number;
     /**
@@ -391,6 +392,12 @@ export interface WorkerMetricsMessage {
      * periodically so a newly started receiver catches up.
      */
     delta?: boolean;
+    /**
+     * Set by senders that understand `delta` (1.2+). Workers only send deltas
+     * once every peer has advertised this, so a 1.1.x worker in a mixed fleet
+     * (rolling restart) keeps receiving full charts it can replace wholesale.
+     */
+    deltaCapable?: boolean;
 }
 
 /**

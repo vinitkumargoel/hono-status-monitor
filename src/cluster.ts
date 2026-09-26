@@ -63,6 +63,7 @@ export function sendMetricsToMaster(
         pid: process.pid,
         metrics,
         charts,
+        deltaCapable: true,
         ...(delta ? { delta: true } : {})
     };
 
@@ -126,6 +127,7 @@ interface WorkerMetricsStore {
         metrics: Partial<MetricsSnapshot>;
         charts: ChartData;
         lastUpdate: number;
+        deltaCapable: boolean;
     };
 }
 
@@ -159,6 +161,9 @@ export function createClusterAggregator(options: { maxRoutes?: number; retention
     function updateWorkerMetrics(message: WorkerMetricsMessage): void {
         if (!isWorkerMetricsMessage(message)) return;
         const previous = workerMetrics[message.workerId];
+        // A peer we have no state for (new, restarted, or evicted after a
+        // pause) has no charts of ours either: send it a full payload next.
+        if (!previous || previous.pid !== message.pid) peerJoined = true;
         let charts = message.charts;
         if (message.delta && previous && previous.pid === message.pid) {
             charts = { ...previous.charts };
@@ -170,8 +175,30 @@ export function createClusterAggregator(options: { maxRoutes?: number; retention
             pid: message.pid,
             metrics: message.metrics,
             charts,
-            lastUpdate: Date.now()
+            lastUpdate: Date.now(),
+            deltaCapable: message.deltaCapable === true
         };
+    }
+
+    /**
+     * True when every live peer other than `selfId` understands delta charts.
+     * A 1.1.x peer replaces its stored charts with whatever arrives, so it must
+     * keep getting full payloads.
+     */
+    let peerJoined = false;
+    /** True once after a new peer appears; the next send should be full. */
+    function takePeerJoined(): boolean {
+        const joined = peerJoined;
+        peerJoined = false;
+        return joined;
+    }
+
+    function peersAcceptDeltas(selfId: number): boolean {
+        cleanupStaleWorkers();
+        for (const [id, w] of Object.entries(workerMetrics)) {
+            if (Number(id) !== selfId && !w.deltaCapable) return false;
+        }
+        return true;
     }
 
     /**
@@ -387,6 +414,8 @@ export function createClusterAggregator(options: { maxRoutes?: number; retention
         getWorkerInfo,
         aggregateMetrics,
         aggregateCharts,
+        peersAcceptDeltas,
+        takePeerJoined,
         get workerCount() {
             cleanupStaleWorkers();
             return Object.keys(workerMetrics).length;

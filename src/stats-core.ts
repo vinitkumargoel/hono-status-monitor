@@ -330,7 +330,7 @@ export function createStatsCore(
             stats.minTime = Math.min(stats.minTime, durationMs);
             stats.maxTime = Math.max(stats.maxTime, durationMs);
             touchRoute(key, stats);
-            observeHistogram(key, statusCode, durationMs);
+            if (config.prometheusHistogram) observeHistogram(key, statusCode, durationMs);
 
             if (statusCode >= 400) {
                 stats.errors++;

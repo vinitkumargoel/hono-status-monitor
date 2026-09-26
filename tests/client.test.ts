@@ -18,7 +18,18 @@ const snapshot = (over: Record<string, unknown> = {}) => ({
     ...over
 });
 
-async function boot(html: string, replies: Reply[]) {
+/** Minimal EventSource stand-in the test drives by hand. */
+class FakeEventSource {
+    static instances: FakeEventSource[] = [];
+    readyState = 0;
+    onmessage: ((ev: { data: string }) => void) | null = null;
+    onerror: (() => void) | null = null;
+    constructor(public url: string) { FakeEventSource.instances.push(this); }
+    close() { this.readyState = 2; }
+    emit(body: unknown) { this.readyState = 1; this.onmessage?.({ data: JSON.stringify(body) }); }
+}
+
+async function boot(html: string, replies: Reply[], opts: { eventSource?: boolean } = {}) {
     const calls: string[] = [];
     const virtualConsole = new VirtualConsole(); // swallow the script's console noise
     const dom = new JSDOM(html, {
@@ -28,6 +39,14 @@ async function boot(html: string, replies: Reply[]) {
         virtualConsole,
         beforeParse(window) {
             (window.HTMLCanvasElement.prototype as unknown as { getContext: () => null }).getContext = () => null;
+            if (opts.eventSource) {
+                FakeEventSource.instances = [];
+                (window as unknown as { EventSource: unknown }).EventSource = FakeEventSource;
+                // Shrink the 5 s first-frame watchdog so the test doesn't wait for it.
+                const realSetTimeout = window.setTimeout.bind(window);
+                (window as unknown as { setTimeout: unknown }).setTimeout = (fn: () => void, ms?: number) =>
+                    realSetTimeout(fn, ms === 5000 ? 30 : ms);
+            }
             (window as unknown as { fetch: unknown }).fetch = (url: string) => {
                 calls.push(url);
                 const reply = replies.shift() ?? { status: 200, body: { snapshot: snapshot(), charts: {} } };
@@ -104,6 +123,59 @@ describe('dashboard client script', () => {
         const long = await boot(html({ retentionSeconds: 900 }), []);
         expect([...long.$('rangeSelect')!.querySelectorAll('button')].map((b) => b.textContent)).toEqual(['1m', '5m', '15m']);
         long.dom.window.close();
+    });
+
+    describe('live stream (SSE)', () => {
+        const streamed = () => html({ stream: true, pollingInterval: 1000 });
+        const setHidden = (dom: JSDOM, hidden: boolean) => {
+            Object.defineProperty(dom.window.document, 'hidden', { configurable: true, get: () => hidden });
+            dom.window.document.dispatchEvent(new dom.window.Event('visibilitychange'));
+        };
+
+        it('renders pushed frames without polling', async () => {
+            const { $, dom, calls } = await boot(streamed(), [], { eventSource: true });
+            expect(FakeEventSource.instances).toHaveLength(1);
+            expect(FakeEventSource.instances[0].url).toContain('api/stream');
+            FakeEventSource.instances[0].emit({ snapshot: snapshot(), charts: {} });
+            expect($('connText')!.textContent).toBe('Live');
+            expect($('cpuVal')!.textContent).toBe('12.3');
+            expect(calls).toHaveLength(0);
+            dom.window.close();
+        });
+
+        it('falls back to polling when the stream opens but never delivers a frame', async () => {
+            const { dom, calls, settle } = await boot(streamed(), [], { eventSource: true });
+            await settle();
+            await settle();
+            expect(FakeEventSource.instances[0].readyState).toBe(2);
+            expect(calls.length).toBeGreaterThanOrEqual(1);
+            dom.window.close();
+        });
+
+        it('re-arms the watchdog when the stream reconnects after the tab was hidden', async () => {
+            const { dom, calls, settle } = await boot(streamed(), [], { eventSource: true });
+            FakeEventSource.instances[0].emit({ snapshot: snapshot(), charts: {} });
+            setHidden(dom, true);
+            expect(FakeEventSource.instances[0].readyState).toBe(2);
+            setHidden(dom, false);
+            expect(FakeEventSource.instances).toHaveLength(2);
+            await settle();
+            await settle();
+            // The second connection stalled silently; the dashboard must not freeze on it.
+            expect(FakeEventSource.instances[1].readyState).toBe(2);
+            expect(calls.length).toBeGreaterThanOrEqual(1);
+            dom.window.close();
+        });
+
+        it('falls back to polling when the server refuses the stream', async () => {
+            const { dom, calls } = await boot(streamed(), [], { eventSource: true });
+            const es = FakeEventSource.instances[0];
+            es.readyState = 2;
+            es.onerror?.();
+            await new Promise((r) => setTimeout(r, 20));
+            expect(calls).toHaveLength(1);
+            dom.window.close();
+        });
     });
 
     it('drives the edge dashboard with the same script', async () => {

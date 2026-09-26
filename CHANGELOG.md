@@ -10,7 +10,7 @@ New, opt-in capabilities and a better dashboard. Nothing is removed, and every o
 
 - **`groupBy: 'route'`** groups requests by the Hono route pattern that handled them (`/users/:id`, including sub-apps), at any depth. Unmatched requests fall back to `normalizePath`. The default stays `'path'`.
 - **`ignorePaths`** leaves requests out entirely: exact strings, `/*` prefixes, RegExps or a predicate.
-- **`sampleRate`** (0–1) records timing for a fraction of requests; counts, status codes and the error rate still include every request.
+- **`sampleRate`** (0–1) records a fraction of requests in per-route stats, percentiles and histograms; the total request count, status codes and overall error rate still include every request.
 - **`logger`** routes the monitor's own messages; `logger: false` silences them. Config warnings go through it too.
 - **`prometheusHistogram: true`** adds `<prefix>_http_request_duration_seconds{method,route,status}` to `/prometheus`, so latency quantiles can be aggregated across instances.
 - **Health checks with options:** a `healthChecks` entry can be `{ check, required, timeoutMs }`. `required: false` checks are reported (with `required: false`) but never make `/health` 503; `timeoutMs` overrides `healthCheckTimeout` for that check.
@@ -31,11 +31,12 @@ New, opt-in capabilities and a better dashboard. Nothing is removed, and every o
 - **Edge fleet aggregation actually covers the fleet.** Each isolate now writes its numbers from the request path (via `executionCtx.waitUntil`) instead of only when someone loads the dashboard. Peer snapshots are cached between writes, so a dashboard poll usually costs no KV reads.
 - Fleet response time is weighted by each isolate's request rate and the error rate by its request count (previously a plain mean, which let idle isolates skew the figures).
 - `/api/stream` computes one snapshot per tick for all connected clients instead of one per client, and its timer only runs while someone is connected.
-- Cluster workers send only new chart points over IPC (a full resend every 30 messages), instead of every series in full every second.
+- Cluster workers send only new chart points over IPC (a full resend every 30 messages), instead of every series in full every second. Deltas are only sent once every peer worker has announced it understands them, so a 1.1.x worker running alongside during a rolling restart keeps receiving full charts, and a full resend goes out whenever a new or restarted peer appears.
 
 ### Behavior changes to be aware of
 
 - The tracking middleware now records a route when the request completes rather than when it starts, so in-flight requests no longer show up as zero-count routes.
+- With a `store`, peer snapshots with non-finite or negative counts, or non-array route lists, are skipped rather than merged.
 - With a `store`, the fleet `responseTime` and `errorRate` are traffic-weighted (see above), so they can differ from 1.1.x.
 - The dashboard's colours and label sizes changed for contrast; it now opens `/api/stream` on Node and Bun.
 

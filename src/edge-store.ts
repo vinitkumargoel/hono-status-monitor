@@ -49,11 +49,18 @@ export async function persistSnapshot(
 function isValidSnapshot(v: unknown): v is MetricsSnapshot {
     if (!v || typeof v !== 'object') return false;
     const s = v as Record<string, unknown>;
+    const count = (x: unknown) => typeof x === 'number' && Number.isFinite(x) && x >= 0;
+    const optionalArray = (x: unknown) => x === undefined || Array.isArray(x);
     return (
-        typeof s.totalRequests === 'number' &&
-        typeof s.rps === 'number' &&
+        count(s.totalRequests) &&
+        count(s.rps) &&
         typeof s.statusCodes === 'object' &&
-        s.statusCodes !== null
+        s.statusCodes !== null &&
+        !Array.isArray(s.statusCodes) &&
+        optionalArray(s.topRoutes) &&
+        optionalArray(s.slowestRoutes) &&
+        optionalArray(s.errorRoutes) &&
+        optionalArray(s.recentErrors)
     );
 }
 
@@ -173,7 +180,9 @@ export function mergeSnapshots(
         weightedErrorRate += (s.errorRate || 0) * (s.totalRequests || 0);
 
         for (const [code, count] of Object.entries(s.statusCodes || {})) {
-            statusCodes[code] = (statusCodes[code] || 0) + (count as number);
+            if (typeof count === 'number' && Number.isFinite(count)) {
+                statusCodes[code] = (statusCodes[code] || 0) + count;
+            }
         }
         rateLimitBlocked += s.rateLimitStats?.blocked || 0;
         rateLimitTotal += s.rateLimitStats?.total || 0;

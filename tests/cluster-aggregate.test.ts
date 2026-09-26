@@ -82,6 +82,30 @@ describe('cluster aggregation', () => {
         expect(merged.rps.map((p) => p.timestamp)).toEqual([2000, 3000, 4000]);
     });
 
+    it('only reports peers as delta-capable when every live peer advertised it', () => {
+        const agg = createClusterAggregator();
+        expect(agg.peersAcceptDeltas(1)).toBe(true);
+        agg.updateWorkerMetrics({ ...msg(1, {}, emptyCharts()), deltaCapable: true });
+        agg.updateWorkerMetrics({ ...msg(2, {}, emptyCharts()), deltaCapable: true });
+        expect(agg.peersAcceptDeltas(1)).toBe(true);
+        // A 1.1.x worker (no flag) joins during a rolling restart.
+        agg.updateWorkerMetrics(msg(3, {}, emptyCharts()));
+        expect(agg.peersAcceptDeltas(1)).toBe(false);
+        // Our own record never blocks us.
+        expect(createClusterAggregator().peersAcceptDeltas(1)).toBe(true);
+    });
+
+    it('asks for one full send when a peer appears or restarts', () => {
+        const agg = createClusterAggregator();
+        agg.updateWorkerMetrics(msg(2, {}));
+        expect(agg.takePeerJoined()).toBe(true);
+        expect(agg.takePeerJoined()).toBe(false);
+        agg.updateWorkerMetrics(msg(2, {}));
+        expect(agg.takePeerJoined()).toBe(false);
+        agg.updateWorkerMetrics({ ...msg(2, {}), pid: 4242 });
+        expect(agg.takePeerJoined()).toBe(true);
+    });
+
     it('treats a delta from a restarted worker (new pid) as a fresh series', () => {
         const agg = createClusterAggregator();
         const series = (t: number) => ({ ...emptyCharts(), rps: [{ timestamp: t, value: 1 }] });
@@ -121,6 +145,6 @@ describe('cluster process helpers', () => {
     it('sends a well-formed message when an IPC channel exists', () => {
         const send = vi.fn();
         withSend(send, () => sendMetricsToMaster({ rps: 1 }, emptyCharts()));
-        expect(send.mock.calls[0][0]).toMatchObject({ type: 'worker-metrics', pid: process.pid, metrics: { rps: 1 } });
+        expect(send.mock.calls[0][0]).toMatchObject({ type: 'worker-metrics', pid: process.pid, metrics: { rps: 1 }, deltaCapable: true });
     });
 });

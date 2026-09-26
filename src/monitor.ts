@@ -15,6 +15,7 @@ import type {
 } from './types.js';
 import {
     isClusterWorker,
+    getWorkerId,
     sendMetricsToMaster,
     createClusterAggregator,
     isWorkerMetricsMessage,
@@ -377,14 +378,19 @@ export function createMonitor(userConfig: StatusMonitorConfig = {}) {
     // Cluster IPC: send only chart points added since the last message, with a
     // full resend every FULL_SYNC_EVERY messages so a receiver that started
     // late (or restarted) catches up. Cuts per-tick IPC from 8 x retention
-    // points to ~8 points.
+    // points to ~8 points. Deltas start only once every peer has said it
+    // understands them (a 1.1.x worker would replace its charts with the
+    // delta), and not before a few ticks have passed to hear from peers.
     const FULL_SYNC_EVERY = 30;
     let chartMessages = 0;
     let lastSentChartTs = -Infinity;
 
     function nextChartPayload(): [ChartData, boolean] {
         const charts = getChartData();
-        const full = chartMessages++ % FULL_SYNC_EVERY === 0;
+        const n = chartMessages++;
+        const peerJoined = clusterAggregator?.takePeerJoined() ?? false;
+        const full = n % FULL_SYNC_EVERY === 0 || n < 3 || peerJoined ||
+            !(clusterAggregator?.peersAcceptDeltas(getWorkerId()) ?? true);
         const since = lastSentChartTs;
         let newest = lastSentChartTs;
         for (const series of Object.values(charts)) {

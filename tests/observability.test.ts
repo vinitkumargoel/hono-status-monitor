@@ -81,6 +81,15 @@ describe('prometheus histogram', () => {
         expect(await (await app.request('/status/prometheus')).text()).not.toContain('duration_seconds');
     });
 
+    it('does not even collect histograms when the option is off', () => {
+        const off = createEdgeMonitor({ logger: false });
+        off.endRequest('/x', 'GET', 5, 200, false);
+        expect(off.getHistograms()).toEqual([]);
+        const on = createEdgeMonitor({ logger: false, prometheusHistogram: true });
+        on.endRequest('/x', 'GET', 5, 200, false);
+        expect(on.getHistograms()).toHaveLength(1);
+    });
+
     it('emits nothing extra when there are no histograms', () => {
         const snapshot = { cpu: 0, memoryMB: 0, memoryPercent: 0, heapUsedMB: 0, heapTotalMB: 0, loadAvg: 0, uptime: 0,
             processUptime: 0, eventLoopLag: 0, activeConnections: 0, rps: 0, responseTime: 0, errorRate: 0,

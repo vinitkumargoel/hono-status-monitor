@@ -239,9 +239,14 @@ export function createEdgeMonitor(userConfig: StatusMonitorConfig = {}) {
      * traffic. Uses `waitUntil` so the write doesn't delay the response or get
      * cut off when the isolate finishes the request.
      */
+    let persisting = false;
     function afterRequest(c: any): void {
-        if (!config.store || Date.now() - lastPersistTime < config.storeWriteInterval) return;
-        const work = getLocalSnapshot().then(maybePersist).catch(() => { /* best-effort */ });
+        if (!config.store || persisting || Date.now() - lastPersistTime < config.storeWriteInterval) return;
+        // Set synchronously so concurrent requests at the boundary don't each
+        // build a snapshot before the first write updates lastPersistTime.
+        persisting = true;
+        const work = getLocalSnapshot().then(maybePersist).catch(() => { /* best-effort */ })
+            .finally(() => { persisting = false; });
         let ctx: { waitUntil?: (p: Promise<unknown>) => void } | undefined;
         try {
             // Hono throws when the runtime provides no ExecutionContext.

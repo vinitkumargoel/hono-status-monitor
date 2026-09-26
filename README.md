@@ -139,10 +139,10 @@ statusMonitor({
 | `healthCheckTimeout` | `number` (ms) | `0` (none) | `0` (none) | Per-check timeout; a timed-out check reports down. Becomes 5000 in 2.0. |
 | `normalizePath` | `(path) => string` | see below | same | Groups paths into routes. |
 | `groupBy` | `'path' \| 'route'` | `'path'` | `'path'` | `'route'` groups by the Hono route pattern that handled the request (`/users/:id`); unmatched requests fall back to `normalizePath`. |
-| `ignorePaths` | `(string \| RegExp)[] \| (path) => boolean` | `[]` | `[]` | Requests left out entirely. Strings match exactly, or as a prefix when they end in `/*`. |
-| `sampleRate` | `number` (0–1) | `1` | `1` | Fraction of requests whose timing is recorded. Counts, status codes and errors always include every request. |
+| `ignorePaths` | `(string \| RegExp)[] \| (path) => boolean` | `[]` | `[]` | Requests left out entirely. Strings match exactly, or as a prefix when they end in `/*`. RegExps run against every request path, so avoid patterns with nested quantifiers. |
+| `sampleRate` | `number` (0–1) | `1` | `1` | Fraction of requests recorded in per-route stats, percentiles and histograms. Total requests, status codes and the overall error rate always include every request. |
 | `logger` | `{ log, warn, error } \| false` | `console` | `console` | Where the monitor's own messages go; `false` silences them. |
-| `maxStreamClients` | `number` | `100` | – | Concurrent `/api/stream` connections; extra clients get 503 and the dashboard polls instead. |
+| `maxStreamClients` | `number` | `100` | – | Concurrent `/api/stream` connections; extra clients get 503 and the dashboard polls instead. The cap is global, so set `authorize` if the dashboard is reachable from the internet. |
 | `prometheus` | `boolean` | `true` | `true` | Expose `/prometheus`. |
 | `prometheusPrefix` | `string` | `'hono'` | `'hono'` | Metric name prefix. |
 | `prometheusHistogram` | `boolean` | `false` | `false` | Add the per-route `http_request_duration_seconds` histogram. |
