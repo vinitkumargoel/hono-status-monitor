@@ -52,7 +52,8 @@ export function getWorkerId(): number {
  */
 export function sendMetricsToMaster(
     metrics: Partial<MetricsSnapshot>,
-    charts: ChartData
+    charts: ChartData,
+    delta = false
 ): void {
     if (!process.send) return;
 
@@ -61,7 +62,9 @@ export function sendMetricsToMaster(
         workerId: getWorkerId(),
         pid: process.pid,
         metrics,
-        charts
+        charts,
+        deltaCapable: true,
+        ...(delta ? { delta: true } : {})
     };
 
     try {
@@ -124,13 +127,14 @@ interface WorkerMetricsStore {
         metrics: Partial<MetricsSnapshot>;
         charts: ChartData;
         lastUpdate: number;
+        deltaCapable: boolean;
     };
 }
 
 /**
  * Create a cluster aggregator for the master process
  */
-export function createClusterAggregator(options: { maxRoutes?: number } = {}) {
+export function createClusterAggregator(options: { maxRoutes?: number; retentionSeconds?: number } = {}) {
     const workerMetrics: WorkerMetricsStore = {};
     const WORKER_TIMEOUT_MS = 10000; // Consider worker dead after 10s no update
     // Match the single-instance route-list cap (config.maxRoutes) so aggregated
@@ -140,14 +144,61 @@ export function createClusterAggregator(options: { maxRoutes?: number } = {}) {
     /**
      * Update metrics from a worker
      */
+    const retentionMs = (options.retentionSeconds ?? 60) * 1000;
+
+    /** Append delta points to a stored series and trim it to the retention window. */
+    function appendSeries(stored: MetricDataPoint[] | undefined, fresh: MetricDataPoint[]): MetricDataPoint[] {
+        const base = stored ?? [];
+        const lastTs = base.length ? base[base.length - 1].timestamp : -Infinity;
+        const merged = base.concat(fresh.filter((p) => p.timestamp > lastTs));
+        const newest = merged.length ? merged[merged.length - 1].timestamp : 0;
+        const cutoff = newest - retentionMs;
+        let start = 0;
+        while (start < merged.length && merged[start].timestamp < cutoff) start++;
+        return start ? merged.slice(start) : merged;
+    }
+
     function updateWorkerMetrics(message: WorkerMetricsMessage): void {
         if (!isWorkerMetricsMessage(message)) return;
+        const previous = workerMetrics[message.workerId];
+        // A peer we have no state for (new, restarted, or evicted after a
+        // pause) has no charts of ours either: send it a full payload next.
+        if (!previous || previous.pid !== message.pid) peerJoined = true;
+        let charts = message.charts;
+        if (message.delta && previous && previous.pid === message.pid) {
+            charts = { ...previous.charts };
+            for (const key of Object.keys(message.charts) as (keyof ChartData)[]) {
+                charts[key] = appendSeries(previous.charts[key], message.charts[key]);
+            }
+        }
         workerMetrics[message.workerId] = {
             pid: message.pid,
             metrics: message.metrics,
-            charts: message.charts,
-            lastUpdate: Date.now()
+            charts,
+            lastUpdate: Date.now(),
+            deltaCapable: message.deltaCapable === true
         };
+    }
+
+    /**
+     * True when every live peer other than `selfId` understands delta charts.
+     * A 1.1.x peer replaces its stored charts with whatever arrives, so it must
+     * keep getting full payloads.
+     */
+    let peerJoined = false;
+    /** True once after a new peer appears; the next send should be full. */
+    function takePeerJoined(): boolean {
+        const joined = peerJoined;
+        peerJoined = false;
+        return joined;
+    }
+
+    function peersAcceptDeltas(selfId: number): boolean {
+        cleanupStaleWorkers();
+        for (const [id, w] of Object.entries(workerMetrics)) {
+            if (Number(id) !== selfId && !w.deltaCapable) return false;
+        }
+        return true;
     }
 
     /**
@@ -363,6 +414,8 @@ export function createClusterAggregator(options: { maxRoutes?: number } = {}) {
         getWorkerInfo,
         aggregateMetrics,
         aggregateCharts,
+        peersAcceptDeltas,
+        takePeerJoined,
         get workerCount() {
             cleanupStaleWorkers();
             return Object.keys(workerMetrics).length;

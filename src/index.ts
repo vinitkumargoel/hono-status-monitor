@@ -1,6 +1,6 @@
 // =============================================================================
 // HONO STATUS MONITOR
-// Real-time server monitoring dashboard for Hono.js with WebSocket updates
+// Real-time server monitoring dashboard for Hono.js (live over SSE / polling)
 // Supports Node.js and Cloudflare Workers/Edge environments
 // =============================================================================
 
@@ -108,7 +108,11 @@ function createNodeStatusMonitor(config: StatusMonitorConfig = {}) {
                 pollingInterval: m.config.pollingInterval,
                 chartjsUrl: m.config.chartjsUrl,
                 chartAdapterUrl: m.config.chartAdapterUrl,
-                inlineCharts: m.config.inlineCharts
+                inlineCharts: m.config.inlineCharts,
+                stream: true,
+                maxRoutes: m.config.maxRoutes,
+                maxRecentErrors: m.config.maxRecentErrors,
+                retentionSeconds: m.config.retentionSeconds
             });
         },
         enableStream: true,

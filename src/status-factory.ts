@@ -25,10 +25,24 @@ export interface AssemblableMonitor {
     getHealthReport(maxAgeMs?: number): Promise<HealthReport>;
     /** Whether any health check was configured (vs. the built-in placeholder). */
     healthConfigured: boolean;
+    logger?: { warn(...args: unknown[]): void };
     resetStats(): void;
     start(): void;
     stop(): void;
     formatUptime(seconds: number): string;
+}
+
+/**
+ * The status surface is public unless `authorize` is set. That's documented,
+ * but easy to miss, so say it once at startup when running in production.
+ */
+function warnIfPublicInProduction(monitor: AssemblableMonitor): void {
+    const env = (globalThis as { process?: { env?: Record<string, string | undefined> } }).process?.env;
+    if (env?.NODE_ENV !== 'production') return;
+    monitor.logger?.warn(
+        `[hono-status-monitor] The status dashboard and APIs under "${monitor.config.path}" are public: ` +
+        'no `authorize` option is set. Set `authorize`, or put your own auth in front of the routes.'
+    );
 }
 
 /** Minimum age of the health data sent with dashboard polls. */
@@ -81,6 +95,7 @@ export function assembleStatusMonitor<
     // Optional auth guard for the whole status surface.
     const guard = createAuthGuard(monitor.config.authorize);
     if (guard) routes.use('*', guard);
+    else warnIfPublicInProduction(monitor);
 
     // Script origins the dashboard may load, for the CSP.
     const cfg = monitor.config;

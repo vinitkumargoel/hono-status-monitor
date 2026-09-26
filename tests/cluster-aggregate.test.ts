@@ -72,6 +72,48 @@ describe('cluster aggregation', () => {
         expect(agg.workerCount).toBe(0);
     });
 
+    it('appends delta chart messages to what a worker sent before, trimmed to retention', () => {
+        const agg = createClusterAggregator({ retentionSeconds: 2 });
+        const series = (...ts: number[]) => ({ ...emptyCharts(), rps: ts.map((t) => ({ timestamp: t, value: 1 })) });
+        agg.updateWorkerMetrics(msg(1, {}, series(1000, 2000)));
+        agg.updateWorkerMetrics({ ...msg(1, {}, series(2000, 3000)), delta: true });
+        agg.updateWorkerMetrics({ ...msg(1, {}, series(4000)), delta: true });
+        const merged = agg.aggregateCharts(emptyCharts());
+        expect(merged.rps.map((p) => p.timestamp)).toEqual([2000, 3000, 4000]);
+    });
+
+    it('only reports peers as delta-capable when every live peer advertised it', () => {
+        const agg = createClusterAggregator();
+        expect(agg.peersAcceptDeltas(1)).toBe(true);
+        agg.updateWorkerMetrics({ ...msg(1, {}, emptyCharts()), deltaCapable: true });
+        agg.updateWorkerMetrics({ ...msg(2, {}, emptyCharts()), deltaCapable: true });
+        expect(agg.peersAcceptDeltas(1)).toBe(true);
+        // A 1.1.x worker (no flag) joins during a rolling restart.
+        agg.updateWorkerMetrics(msg(3, {}, emptyCharts()));
+        expect(agg.peersAcceptDeltas(1)).toBe(false);
+        // Our own record never blocks us.
+        expect(createClusterAggregator().peersAcceptDeltas(1)).toBe(true);
+    });
+
+    it('asks for one full send when a peer appears or restarts', () => {
+        const agg = createClusterAggregator();
+        agg.updateWorkerMetrics(msg(2, {}));
+        expect(agg.takePeerJoined()).toBe(true);
+        expect(agg.takePeerJoined()).toBe(false);
+        agg.updateWorkerMetrics(msg(2, {}));
+        expect(agg.takePeerJoined()).toBe(false);
+        agg.updateWorkerMetrics({ ...msg(2, {}), pid: 4242 });
+        expect(agg.takePeerJoined()).toBe(true);
+    });
+
+    it('treats a delta from a restarted worker (new pid) as a fresh series', () => {
+        const agg = createClusterAggregator();
+        const series = (t: number) => ({ ...emptyCharts(), rps: [{ timestamp: t, value: 1 }] });
+        agg.updateWorkerMetrics(msg(1, {}, series(1000)));
+        agg.updateWorkerMetrics({ ...msg(1, {}, series(5000)), pid: 9999, delta: true });
+        expect(agg.aggregateCharts(emptyCharts()).rps.map((p) => p.timestamp)).toEqual([5000]);
+    });
+
     it('ignores malformed messages', () => {
         const agg = createClusterAggregator();
         agg.updateWorkerMetrics({ ...msg(1, {}), metrics: { rps: 'x' } } as unknown as WorkerMetricsMessage);
@@ -103,6 +145,25 @@ describe('cluster process helpers', () => {
     it('sends a well-formed message when an IPC channel exists', () => {
         const send = vi.fn();
         withSend(send, () => sendMetricsToMaster({ rps: 1 }, emptyCharts()));
-        expect(send.mock.calls[0][0]).toMatchObject({ type: 'worker-metrics', pid: process.pid, metrics: { rps: 1 } });
+        expect(send.mock.calls[0][0]).toMatchObject({ type: 'worker-metrics', pid: process.pid, metrics: { rps: 1 }, deltaCapable: true });
+    });
+});
+
+describe('cluster monitor wiring', () => {
+    it('receives peer metrics after start() without initSocket(), and stops listening on stop()', async () => {
+        const { createMonitor } = await import('../src/monitor');
+        const before = process.listenerCount('message');
+        const monitor = createMonitor({ clusterMode: true, logger: false });
+        monitor.start();
+        expect(process.listenerCount('message')).toBe(before + 1);
+        monitor.initSocket(); // idempotent: no second listener
+        expect(process.listenerCount('message')).toBe(before + 1);
+
+        process.emit('message' as never, { ...msg(7, { totalRequests: 5 }), deltaCapable: true } as never);
+        const snapshot = await monitor.getMetricsSnapshot();
+        expect(snapshot.workers?.map((w) => w.pid)).toContain(1007);
+
+        monitor.stop();
+        expect(process.listenerCount('message')).toBe(before);
     });
 });

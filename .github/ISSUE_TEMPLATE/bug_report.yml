@@ -1,0 +1,85 @@
+name: Bug report
+description: Something doesn't work as documented.
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Check [docs/troubleshooting.md](https://github.com/vinitkumargoel/hono-status-monitor/blob/main/docs/troubleshooting.md) first.
+        Security vulnerabilities: don't file them here. Use "Report a vulnerability" under the Security tab.
+  - type: dropdown
+    id: runtime
+    attributes:
+      label: Runtime
+      options:
+        - Node.js
+        - Bun
+        - Cloudflare Workers
+        - Deno
+        - Vercel Edge
+        - Other
+    validations:
+      required: true
+  - type: input
+    id: runtime-version
+    attributes:
+      label: Runtime version
+      placeholder: "e.g. Node 22.11.0, Bun 1.2.3, wrangler 4.x"
+  - type: dropdown
+    id: entry
+    attributes:
+      label: Import
+      options:
+        - hono-status-monitor
+        - hono-status-monitor/edge
+    validations:
+      required: true
+  - type: input
+    id: package-version
+    attributes:
+      label: hono-status-monitor version
+      placeholder: "npm ls hono-status-monitor"
+    validations:
+      required: true
+  - type: input
+    id: hono-version
+    attributes:
+      label: hono version
+      placeholder: "npm ls hono"
+    validations:
+      required: true
+  - type: textarea
+    id: config
+    attributes:
+      label: Config and mounting code
+      description: The statusMonitor() call and how you mount it. Remove secrets.
+      render: ts
+      placeholder: |
+        const monitor = statusMonitor({ groupBy: 'route' });
+        app.use('*', monitor.middleware);
+        app.route('/status', monitor.routes);
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior
+      description: Include error messages, browser console output, and the dashboard badge state if relevant.
+    validations:
+      required: true
+  - type: textarea
+    id: repro
+    attributes:
+      label: Steps to reproduce
+      description: A minimal repository or snippet helps most.
+  - type: textarea
+    id: context
+    attributes:
+      label: Deployment context
+      description: Reverse proxy, CDN, cluster/PM2, securityHeaders, authorize, store, etc.

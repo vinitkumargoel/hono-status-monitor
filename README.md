@@ -14,9 +14,12 @@ Real-time monitoring dashboard for **Hono.js** — one middleware, a zero-depend
 
 - **Live metrics** — CPU, memory, heap, load, response time, RPS, event-loop lag (real `perf_hooks` histogram) + GC stats.
 - **Analytics** — P50/P95/P99 latency, top / slowest / error routes, status-code breakdown, recent errors.
-- **Endpoints** — HTML dashboard, JSON API, **`/prometheus`** scrape, **`/health`** (200/503), **`/api/stream`** SSE.
-- **Auth hook, alert callbacks, multiple named health checks, dark mode, cluster (PM2) aggregation.**
-- **Safe by default** — route paths are HTML-escaped (no stored XSS), route map is LRU-capped (no unbounded memory growth).
+- **Endpoints** — HTML dashboard (live over SSE on Node/Bun), JSON API, **`/prometheus`** scrape with a per-route latency histogram, **`/health`** (200/503), **`/api/stream`** SSE.
+- **Route grouping by Hono pattern** (`/users/:id`), path exclusion, sampling.
+- **Auth hook, alert callbacks, named health checks (required or optional, with timeouts), accessible dashboard with OS-aware dark mode, cluster (PM2) aggregation, edge fleet aggregation via KV.**
+- **Safe by default** — route paths are HTML-escaped (no stored XSS), route map is LRU-capped (no unbounded memory growth); optional nonce CSP.
+
+More: [runtime cookbook](./docs/cookbook.md) · [troubleshooting](./docs/troubleshooting.md) · [examples](./examples) · [changelog](./CHANGELOG.md)
 
 ## Runtime support
 
@@ -24,7 +27,11 @@ Real-time monitoring dashboard for **Hono.js** — one middleware, a zero-depend
 |---|---|---|---|
 | Node.js | `hono-status-monitor` | `@hono/node-server` | Full system + request |
 | Bun | `hono-status-monitor` | `Bun.serve` | Full system + request |
-| Cloudflare / Edge | `hono-status-monitor/edge` | runtime default | Request-only (no CPU/mem/heap) |
+| Cloudflare Workers | `hono-status-monitor/edge` | runtime default | Request-only (no CPU/mem/heap) |
+| Deno | `npm:hono-status-monitor/edge` | `Deno.serve` | Request-only |
+| Vercel Edge / Next.js | `hono-status-monitor/edge` | `hono/vercel` | Request-only |
+
+Recipes for each: [docs/cookbook.md](./docs/cookbook.md).
 
 ## Install
 
@@ -75,7 +82,7 @@ The bare `hono-status-monitor` specifier still resolves to the main (Node) entry
 
 ### Bundle size
 
-Roughly 38 KB minified (13 KB gzipped) for a Worker using the `/edge` entry, down from 73 KB in 1.0.x. CI enforces a size budget on both entries. The dashboard markup is loaded through a dynamic `import()`, so bundlers with code splitting turned on keep it out of the entry chunk — that drops the edge entry to about 13 KB.
+Roughly 47 KB minified (17 KB gzipped) for a Worker using the `/edge` entry, hono excluded. CI enforces a size budget on both entries. The dashboard markup is loaded through a dynamic `import()`, so bundlers with code splitting turned on keep it out of the entry chunk. See [docs/bundle-size-report.md](./docs/bundle-size-report.md) for the 1.1.0 size work.
 
 ## Endpoints
 
@@ -85,9 +92,9 @@ Roughly 38 KB minified (13 KB gzipped) for a Worker using the `/edge` entry, dow
 | `GET /status/api/metrics` | `{ snapshot, charts, health? }` JSON (`health` only when checks are configured) |
 | `GET /status/api/stream` | SSE stream of the same JSON (Node/Bun only) |
 | `GET /status/health` | `{ status, configured, uptime, timestamp, checks }` — **200** if all checks pass, **503** if degraded |
+| `GET /status/prometheus` | Prometheus/OpenMetrics text (disable via `prometheus: false`) |
 
 All endpoints send `Cache-Control: no-store`. `/health` results are shared between concurrent callers and reused for up to 1 s; the copy sent to dashboard polls for up to 5 s.
-| `GET /status/prometheus` | Prometheus/OpenMetrics text (disable via `prometheus: false`) |
 
 ## Configuration
 
@@ -128,11 +135,17 @@ statusMonitor({
 | `onAlert` | `(event) => void` | – | – | Called on each OK ↔ breached transition. |
 | `authorize` | `(c) => boolean \| Promise<boolean>` | – | – | Guards every status route; falsy or throwing → 401. |
 | `healthCheck` | `() => Promise<HealthCheckResult>` | – | – | Single check, reported as `database`. Its `details.poolSize` / `availableConnections` feed the snapshot's `database` field. |
-| `healthChecks` | `Record<string, () => Promise<HealthCheckResult>>` | – | – | Named checks, run in parallel. Takes precedence over `healthCheck` for `/health`. |
+| `healthChecks` | `Record<string, fn \| { check, required?, timeoutMs? }>` | – | – | Named checks, run in parallel. Takes precedence over `healthCheck` for `/health`. A check with `required: false` is shown but never makes `/health` 503. |
 | `healthCheckTimeout` | `number` (ms) | `0` (none) | `0` (none) | Per-check timeout; a timed-out check reports down. Becomes 5000 in 2.0. |
 | `normalizePath` | `(path) => string` | see below | same | Groups paths into routes. |
+| `groupBy` | `'path' \| 'route'` | `'path'` | `'path'` | `'route'` groups by the Hono route pattern that handled the request (`/users/:id`); unmatched requests fall back to `normalizePath`. |
+| `ignorePaths` | `(string \| RegExp)[] \| (path) => boolean` | `[]` | `[]` | Requests left out entirely. Strings match exactly, or as a prefix when they end in `/*`. RegExps run against every request path, so avoid patterns with nested quantifiers. |
+| `sampleRate` | `number` (0–1) | `1` | `1` | Fraction of requests recorded in per-route stats, percentiles and histograms. Total requests, status codes and the overall error rate always include every request. |
+| `logger` | `{ log, warn, error } \| false` | `console` | `console` | Where the monitor's own messages go; `false` silences them. |
+| `maxStreamClients` | `number` | `100` | – | Concurrent `/api/stream` connections; extra clients get 503 and the dashboard polls instead. The cap is global, so set `authorize` if the dashboard is reachable from the internet. |
 | `prometheus` | `boolean` | `true` | `true` | Expose `/prometheus`. |
 | `prometheusPrefix` | `string` | `'hono'` | `'hono'` | Metric name prefix. |
+| `prometheusHistogram` | `boolean` | `false` | `false` | Add the per-route `http_request_duration_seconds` histogram. |
 | `chartjsUrl` / `chartAdapterUrl` | `string` | jsDelivr, pinned + SRI | same | Self-host Chart.js (a relative URL is allowed by the CSP as `'self'`). |
 | `inlineCharts` | `boolean` | `false` | `false` | Built-in renderer, no external scripts at all. |
 | `securityHeaders` | `boolean` | `false` | `false` | Nonce CSP + same-origin framing on the dashboard (see [Security](#security)). Becomes the default in 2.0. |
@@ -140,6 +153,7 @@ statusMonitor({
 | `store` | `StatusStore` | – | – | KV-shaped store for aggregating edge isolates (see below). No-op on Node. |
 | `instanceId` | `string` | – | random | Stable id for this isolate in `store`. |
 | `storeWriteInterval` | `number` (ms) | – | `60000` | How often an isolate writes to `store`. |
+| `maxPeers` | `number` | – | `50` | Upper bound on peer snapshots read from `store` per refresh. |
 | `socketPath` | `string` | – | – | **Deprecated**, ignored. |
 
 Numeric options that can't work (zero or negative intervals and caps, `NaN`, non-numeric strings) fall back to their default with a console warning. `undefined` means "use the default", and numeric strings such as `'120'` are accepted.
@@ -180,9 +194,23 @@ Each Workers isolate keeps its own counters. Pass a KV namespace (or anything im
 statusMonitor({ store: env.STATUS_KV, storeWriteInterval: 60_000 });
 ```
 
+Each isolate writes its numbers from the request path (through `executionCtx.waitUntil`) once per `storeWriteInterval`, and peer snapshots are cached between writes, so a dashboard poll costs no KV reads most of the time. Counts are summed across isolates; response time and error rate are weighted by traffic. Charts stay per isolate. KV is eventually consistent, so expect the fleet view to lag by up to a minute. See the [cookbook](./docs/cookbook.md) for a complete Worker.
+
 ## Prometheus / Grafana
 
-Scrape `/status/prometheus` — emits `<prefix>_cpu_percent`, `_heap_used_bytes`, `_rps`, `_response_time_p95_ms`, `_requests_total`, `_http_responses_total{code="..."}`, etc.
+Scrape `/status/prometheus` — emits `<prefix>_cpu_percent`, `_heap_used_bytes`, `_rps`, `_response_time_p95_ms`, `_requests_total`, `_http_responses_total{code="..."}`, etc., plus, with `prometheusHistogram: true`, a latency histogram per route:
+
+```
+hono_http_request_duration_seconds_bucket{method="GET",route="/users/:id",status="200",le="0.05"} 1832
+```
+
+Use it for quantiles across instances — the `_p95_ms` gauges are per process and can't be averaged:
+
+```promql
+histogram_quantile(0.95, sum by (le, route) (rate(hono_http_request_duration_seconds_bucket[5m])))
+```
+
+The histogram is opt-in (`prometheusHistogram: true`) because it adds up to 14 series per route and status. Pair it with `groupBy: 'route'` so the `route` label has bounded cardinality.
 
 ```yaml
 scrape_configs:
@@ -228,8 +256,10 @@ The dashboard exposes hostname, PID, routes and errors. Protect it in production
 ```typescript
 // Built-in guard — compare secrets in constant time (works on every runtime)
 import { timingSafeEqual } from 'hono/utils/buffer';
+const token = process.env.STATUS_TOKEN;
 statusMonitor({
-  authorize: (c) => timingSafeEqual(c.req.header('x-token') ?? '', process.env.STATUS_TOKEN!),
+  // Reject outright when the secret is unset — timingSafeEqual('', '') is true.
+  authorize: (c) => !!token && timingSafeEqual(c.req.header('x-token') ?? '', token),
 });
 
 // …or Hono basic-auth
@@ -248,7 +278,7 @@ The status surface is **public by default** — anyone who can reach the mounted
 
 ## Upgrading
 
-See [CHANGELOG.md](./CHANGELOG.md). 1.1.1 changes no public API; the things you might notice are listed there under *Behavior changes*.
+See [CHANGELOG.md](./CHANGELOG.md). 1.1.1 and 1.2.0 remove no public API and keep every existing default; the things you might notice are listed under *Behavior changes to be aware of* in each release.
 
 ## Requirements
 

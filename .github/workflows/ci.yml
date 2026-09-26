@@ -82,6 +82,22 @@ jobs:
         run: deno run -A --node-modules-dir=manual smoke.mjs
         working-directory: ${{ runner.temp }}/consumer
 
+  # The /edge build inside the real Workers runtime (workerd via Miniflare).
+  workerd:
+    name: Workers runtime (workerd)
+    needs: check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm install --no-save miniflare@4
+      - run: npm run build
+      - run: node scripts/workerd-smoke.mjs
+
   # The lowest hono the peer range admits.
   hono-floor:
     name: Tests against hono 4.0.0

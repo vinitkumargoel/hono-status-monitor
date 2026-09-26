@@ -6,6 +6,7 @@
 import type { Hono } from 'hono';
 import { toPrometheus } from './format.js';
 import type { MetricsSnapshot, ChartData, HealthReport } from './types.js';
+import type { RouteHistogram } from './stats-core.js';
 
 /** Status data is live; never let a proxy or browser cache it. */
 export const NO_STORE: Record<string, string> = { 'Cache-Control': 'no-store' };
@@ -14,13 +15,16 @@ interface CommonRouteMonitor {
     config: {
         prometheus: boolean;
         prometheusPrefix: string;
+        prometheusHistogram?: boolean;
         pollingInterval: number;
+        maxStreamClients?: number;
         authorize?: (c: any) => boolean | Promise<boolean>;
     };
     getMetricsSnapshot: () => Promise<MetricsSnapshot>;
     getChartData: () => ChartData;
     getHealthReport: (maxAgeMs?: number) => Promise<HealthReport>;
     healthConfigured?: boolean;
+    getHistograms?: () => RouteHistogram[];
 }
 
 /**
@@ -64,7 +68,8 @@ export function registerCommonRoutes(
     if (monitor.config.prometheus) {
         routes.get('/prometheus', async (c) => {
             const snapshot = await monitor.getMetricsSnapshot();
-            const body = toPrometheus(snapshot, monitor.config.prometheusPrefix);
+            const histograms = monitor.config.prometheusHistogram ? monitor.getHistograms?.() : undefined;
+            const body = toPrometheus(snapshot, monitor.config.prometheusPrefix, histograms);
             return c.body(body, 200, {
                 ...NO_STORE,
                 'Content-Type': 'text/plain; version=0.0.4; charset=utf-8'
@@ -74,70 +79,110 @@ export function registerCommonRoutes(
 
     // Server-Sent Events stream — push metrics instead of client polling.
     if (options.enableStream) {
+        const broadcaster = createBroadcaster(monitor);
         routes.get('/api/stream', (c) => {
-            const interval = Math.max(250, monitor.config.pollingInterval);
-            const encoder = new TextEncoder();
-            let timer: ReturnType<typeof setInterval> | null = null;
-            let closed = false;
+            const maxClients = monitor.config.maxStreamClients ?? 100;
+            if (broadcaster.size >= maxClients) {
+                return c.json({ error: 'Too many stream clients' }, 503, { ...NO_STORE, 'Retry-After': '30' });
+            }
+            return broadcaster.connect(c.req.raw.signal);
+        });
+    }
+}
 
-            const cleanup = (controller?: ReadableStreamDefaultController) => {
-                if (closed) return;
-                closed = true;
-                if (timer) clearInterval(timer);
-                timer = null;
-                // Close the stream so the socket is released instead of leaking
-                // an open connection that produces nothing. Guarded because the
-                // controller may already be closed (client gone, cancel() ran).
-                try { controller?.close(); } catch { /* already closed */ }
-            };
+type Client = ReadableStreamDefaultController<Uint8Array>;
 
-            // If the client aborts (browser tab closed, fetch cancelled), stop
-            // pushing immediately rather than waiting for the next enqueue to throw.
-            const signal = c.req.raw.signal;
+/**
+ * One timer and one snapshot per tick for all open streams of a monitor,
+ * instead of a timer and a snapshot per connection. The timer only runs while
+ * at least one client is connected.
+ */
+function createBroadcaster(monitor: CommonRouteMonitor) {
+    const interval = Math.max(250, monitor.config.pollingInterval);
+    const encoder = new TextEncoder();
+    const clients = new Set<Client>();
+    let timer: ReturnType<typeof setInterval> | null = null;
+    let last: Uint8Array | null = null;
 
-            const stream = new ReadableStream({
+    const drop = (client: Client) => {
+        if (!clients.delete(client)) return;
+        // Close so the socket is released; guarded because the controller may
+        // already be closed (client gone, cancel() ran).
+        try { client.close(); } catch { /* already closed */ }
+        if (clients.size === 0 && timer) {
+            clearInterval(timer);
+            timer = null;
+            last = null;
+        }
+    };
+
+    const frame = async (): Promise<Uint8Array> => {
+        const [snapshot, health] = await Promise.all([
+            monitor.getMetricsSnapshot(),
+            monitor.healthConfigured ? monitor.getHealthReport(Math.max(5000, interval)) : undefined
+        ]);
+        const charts = monitor.getChartData();
+        return encoder.encode(`data: ${JSON.stringify({ snapshot, charts, health })}\n\n`);
+    };
+
+    const send = (client: Client, chunk: Uint8Array) => {
+        try {
+            client.enqueue(chunk);
+        } catch {
+            drop(client);
+        }
+    };
+
+    const tick = async () => {
+        if (clients.size === 0) return;
+        try {
+            last = await frame();
+        } catch {
+            // Snapshot failed: end every stream rather than hold them open
+            // producing nothing. EventSource clients reconnect on their own.
+            for (const client of [...clients]) drop(client);
+            return;
+        }
+        for (const client of [...clients]) send(client, last);
+    };
+
+    return {
+        get size() {
+            return clients.size;
+        },
+        connect(signal?: AbortSignal): Response {
+            let self: Client | null = null;
+            const stream = new ReadableStream<Uint8Array>({
                 start(controller) {
-                    const onAbort = () => cleanup(controller);
-                    if (signal) {
-                        if (signal.aborted) return cleanup(controller);
-                        signal.addEventListener('abort', onAbort, { once: true });
+                    self = controller;
+                    if (signal?.aborted) {
+                        try { controller.close(); } catch { /* ignore */ }
+                        return;
                     }
-                    const push = async () => {
-                        if (closed) return;
-                        try {
-                            const [snapshot, health] = await Promise.all([
-                                monitor.getMetricsSnapshot(),
-                                monitor.healthConfigured
-                                    ? monitor.getHealthReport(Math.max(5000, interval))
-                                    : undefined
-                            ]);
-                            const charts = monitor.getChartData();
-                            controller.enqueue(
-                                encoder.encode(`data: ${JSON.stringify({ snapshot, charts, health })}\n\n`)
-                            );
-                        } catch {
-                            // Snapshot failed or the stream is gone — tear down the
-                            // connection instead of holding it open indefinitely.
-                            cleanup(controller);
-                        }
-                    };
-                    push();
-                    timer = setInterval(push, interval);
-                    // An open stream shouldn't by itself keep the process alive.
-                    (timer as { unref?: () => void }).unref?.();
+                    signal?.addEventListener('abort', () => drop(controller), { once: true });
+                    clients.add(controller);
+                    // A new client gets data immediately: the latest frame if one
+                    // is fresh, otherwise its own.
+                    if (last) send(controller, last);
+                    else frame().then((chunk) => send(controller, chunk), () => drop(controller));
+                    if (!timer) {
+                        timer = setInterval(tick, interval);
+                        // An open stream shouldn't by itself keep the process alive.
+                        (timer as { unref?: () => void }).unref?.();
+                    }
                 },
                 cancel() {
-                    cleanup();
+                    if (self) drop(self);
                 }
             });
-
             return new Response(stream, {
                 headers: {
+                    ...NO_STORE,
                     'Content-Type': 'text/event-stream',
                     'Cache-Control': 'no-cache, no-transform',
                     Connection: 'keep-alive'
                 }
             });
-        });
-    }
+        }
+    };
 }

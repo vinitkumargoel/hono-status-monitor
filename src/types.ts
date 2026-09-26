@@ -37,9 +37,11 @@ export interface StatusMonitorConfig {
     healthCheck?: () => Promise<HealthCheckResult>;
     /**
      * Named health checks surfaced on the dashboard and `/health` endpoint.
-     * Each is run in parallel; the endpoint returns 503 if any required check fails.
+     * Each is run in parallel; the endpoint returns 503 if any required check
+     * fails. A check is either a function or `{ check, required, timeoutMs }`;
+     * a check with `required: false` is reported but never degrades `/health`.
      */
-    healthChecks?: Record<string, () => Promise<HealthCheckResult>>;
+    healthChecks?: Record<string, HealthCheckFn | HealthCheckDefinition>;
     /**
      * Give up on a health check after this many milliseconds and report it as
      * disconnected, so one hung dependency can't stall `/health` or the
@@ -49,6 +51,38 @@ export interface StatusMonitorConfig {
     healthCheckTimeout?: number;
     /** Custom path normalization function */
     normalizePath?: (path: string) => string;
+    /**
+     * How requests are grouped into routes:
+     * - `'path'` (default): the request path, through `normalizePath`.
+     * - `'route'`: the Hono route pattern that handled the request
+     *   (`/users/:id`), so parameterised routes group exactly regardless of
+     *   depth. Requests no route matched fall back to `normalizePath`.
+     */
+    groupBy?: 'path' | 'route';
+    /**
+     * Requests to leave out of the metrics entirely, e.g. favicon, asset or
+     * probe traffic. Strings match a path exactly or as a prefix when they end
+     * in `/*`; RegExps are tested against the path; or pass a predicate.
+     * The monitor's own mount path is always excluded.
+     */
+    ignorePaths?: Array<string | RegExp> | ((path: string) => boolean);
+    /**
+     * Fraction of requests (0–1) recorded in per-route stats, latency
+     * percentiles and histograms (default: 1). The totals — request count,
+     * status codes and the overall error rate — always include every request;
+     * per-route counts and errors cover only the sampled share.
+     */
+    sampleRate?: number;
+    /**
+     * Where the monitor writes its own messages (start/stop, warnings).
+     * Pass `false` to silence it (default: `console`).
+     */
+    logger?: StatusLogger | false;
+    /**
+     * Maximum concurrent `/api/stream` connections per monitor; extra clients
+     * get a 503 and the dashboard falls back to polling (default: 100).
+     */
+    maxStreamClients?: number;
     /** Enable cluster mode for PM2/multi-process aggregation (auto-detected if not set) */
     clusterMode?: boolean;
     /**
@@ -62,6 +96,13 @@ export interface StatusMonitorConfig {
     prometheus?: boolean;
     /** Metric name prefix used in Prometheus output (default: 'hono') */
     prometheusPrefix?: string;
+    /**
+     * Add a `<prefix>_http_request_duration_seconds` histogram labelled by
+     * method, route and status to `/prometheus`. Off by default because it adds
+     * up to ~14 series per route and status; pair it with `groupBy: 'route'`
+     * to keep the `route` label bounded (default: false).
+     */
+    prometheusHistogram?: boolean;
     /** Override the Chart.js script URL (e.g. to self-host under a strict CSP) */
     chartjsUrl?: string;
     /** Override the Chart.js date adapter script URL */
@@ -95,6 +136,31 @@ export interface StatusMonitorConfig {
      * respect KV write limits. Default: 60000.
      */
     storeWriteInterval?: number;
+    /**
+     * Upper bound on peer snapshots read from `store` per refresh, so a large
+     * fleet doesn't turn each dashboard read into hundreds of KV reads.
+     * Default: 50.
+     */
+    maxPeers?: number;
+}
+
+/** A health check function. */
+export type HealthCheckFn = () => Promise<HealthCheckResult>;
+
+/** A health check with options. */
+export interface HealthCheckDefinition {
+    check: HealthCheckFn;
+    /** When false, a failure is reported but doesn't make `/health` 503 (default: true). */
+    required?: boolean;
+    /** Per-check timeout in ms; overrides `healthCheckTimeout`. */
+    timeoutMs?: number;
+}
+
+/** The subset of `console` the monitor writes through. */
+export interface StatusLogger {
+    log(...args: unknown[]): void;
+    warn(...args: unknown[]): void;
+    error(...args: unknown[]): void;
 }
 
 /**
@@ -127,6 +193,8 @@ export interface AlertEvent {
  */
 export interface NamedHealthResult extends HealthCheckResult {
     name: string;
+    /** False for checks configured with `required: false`. */
+    required?: boolean;
 }
 
 /**
@@ -318,6 +386,18 @@ export interface WorkerMetricsMessage {
     pid: number;
     metrics: Partial<MetricsSnapshot>;
     charts: ChartData;
+    /**
+     * When true, `charts` holds only points newer than the previous message and
+     * is appended to what the receiver already has. Full messages are sent
+     * periodically so a newly started receiver catches up.
+     */
+    delta?: boolean;
+    /**
+     * Set by senders that understand `delta` (1.2+). Workers only send deltas
+     * once every peer has advertised this, so a 1.1.x worker in a mixed fleet
+     * (rolling restart) keeps receiving full charts it can replace wholesale.
+     */
+    deltaCapable?: boolean;
 }
 
 /**
@@ -352,6 +432,14 @@ export interface DashboardProps {
     inlineCharts?: boolean;
     /** CSP nonce stamped on the inline client script (set by the route handler) */
     nonce?: string;
+    /** Use the SSE stream for live updates, falling back to polling. */
+    stream?: boolean;
+    /** Rows shown in each route list (default 5). */
+    maxRoutes?: number;
+    /** Rows shown in the recent errors panel (default 5). */
+    maxRecentErrors?: number;
+    /** History kept server-side; enables the chart range selector above 60 s. */
+    retentionSeconds?: number;
 }
 
 /**

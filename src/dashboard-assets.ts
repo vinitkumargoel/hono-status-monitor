@@ -20,12 +20,12 @@ export const BASE_CSS = `        :root {
             --bg-card: #fff;
             --border: #e5e5e5;
             --text: #111;
-            --text-secondary: #666;
-            --text-muted: #999;
-            --accent: #3b82f6;
-            --success: #10b981;
-            --warning: #f59e0b;
-            --danger: #ef4444;
+            --text-secondary: #555;
+            --text-muted: #6b6b6b;
+            --accent: #2563eb;
+            --success: #047857;
+            --warning: #b45309;
+            --danger: #dc2626;
         }
         
         .dark {
@@ -34,9 +34,20 @@ export const BASE_CSS = `        :root {
             --bg-card: #1a1a1a;
             --border: #2a2a2a;
             --text: #fafafa;
-            --text-secondary: #a0a0a0;
-            --text-muted: #666;
+            --text-secondary: #b0b0b0;
+            --text-muted: #9a9a9a;
+            --accent: #60a5fa;
+            --success: #34d399;
+            --warning: #fbbf24;
+            --danger: #f87171;
         }
+
+        .visually-hidden { position: absolute; width: 1px; height: 1px; margin: -1px; padding: 0; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0; }
+        h1, h2, h3 { margin: 0; }
+        .range-select { display: flex; gap: 4px; justify-content: flex-end; margin-bottom: 8px; }
+        .range-select button { font: inherit; font-size: 11px; padding: 3px 8px; border: 1px solid var(--border); border-radius: 6px; background: var(--bg-card); color: var(--text-secondary); cursor: pointer; }
+        .range-select button[aria-pressed="true"] { background: var(--text); color: var(--bg); border-color: var(--text); }
+        :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
         
         * { margin: 0; padding: 0; box-sizing: border-box; }
         
@@ -98,9 +109,9 @@ export const BASE_CSS = `        :root {
         /* Health checks */
         .health-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
         .health-item { padding: 12px; background: var(--bg-secondary); border-radius: 8px; text-align: center; }
-        .health-item .label { font-size: 10px; color: var(--text-muted); text-transform: uppercase; overflow: hidden; text-overflow: ellipsis; }
+        .health-item .label { font-size: 11px; color: var(--text-muted); text-transform: uppercase; overflow: hidden; text-overflow: ellipsis; }
         .health-item .value { font-size: 16px; font-weight: 600; margin-top: 4px; }
-        .health-item .status { display: inline-block; padding: 2px 8px; border-radius: 4px; font-size: 10px; font-weight: 600; margin-top: 4px; }
+        .health-item .status { display: inline-block; padding: 2px 8px; border-radius: 4px; font-size: 11px; font-weight: 600; margin-top: 4px; }
         .health-item .status.ok { background: #dcfce7; color: #166534; }
         .dark .health-item .status.ok { background: #14532d; color: #86efac; }
         .health-empty { grid-column: 1 / -1; font-size: 12px; color: var(--text-muted); }
@@ -118,7 +129,7 @@ export const BASE_CSS = `        :root {
             border-radius: 8px;
             text-align: center;
         }
-        .stat-box .label { font-size: 10px; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.5px; }
+        .stat-box .label { font-size: 11px; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.5px; }
         .stat-box .value { font-size: 18px; font-weight: 600; margin-top: 4px; }
 
         /* Percentiles */
@@ -132,7 +143,7 @@ export const BASE_CSS = `        :root {
             border-radius: 8px;
         }
         .percentile-item { text-align: center; }
-        .percentile-item .label { font-size: 10px; color: var(--text-muted); }
+        .percentile-item .label { font-size: 11px; color: var(--text-muted); }
         .percentile-item .value { font-size: 16px; font-weight: 600; color: var(--accent); }
 
         /* Metric Rows */
@@ -169,7 +180,7 @@ export const BASE_CSS = `        :root {
         /* Status Codes */
         .status-codes { display: grid; grid-template-columns: repeat(5, 1fr); gap: 8px; }
         .status-code-box { text-align: center; padding: 10px; background: var(--bg-secondary); border-radius: 6px; }
-        .status-code-box .code { font-size: 10px; color: var(--text-muted); }
+        .status-code-box .code { font-size: 11px; color: var(--text-muted); }
         .status-code-box .count { font-size: 18px; font-weight: 600; margin-top: 2px; }
         .s2xx { color: var(--success); }
         .s3xx { color: var(--accent); }
@@ -180,7 +191,7 @@ export const BASE_CSS = `        :root {
         .errors-panel { background: var(--bg-secondary); border-radius: 8px; padding: 12px; }
         .error-item { font-size: 12px; padding: 8px; background: var(--bg-card); border-radius: 4px; margin-top: 6px; border-left: 3px solid var(--danger); }
         .error-item:first-of-type { margin-top: 0; }
-        .error-time { font-size: 10px; color: var(--text-muted); }
+        .error-time { font-size: 11px; color: var(--text-muted); }
         .error-path { font-family: monospace; color: var(--danger); }
 
         @media (max-width: 640px) {
@@ -197,31 +208,76 @@ export const BASE_CSS = `        :root {
  * Every DOM read is optional: `setText`, `setDanger` and `createChart` no-op when
  * the element is absent, so Node-only cards simply do not update on edge.
  */
-export function clientScript(inlineCharts: boolean, pollingInterval: number): string {
+export interface ClientOptions {
+    /** Prefer the SSE stream (Node/Bun), falling back to polling. */
+    stream?: boolean;
+    /** Rows shown in each route list (config.maxRoutes). */
+    maxRoutes?: number;
+    /** Rows shown in the recent errors panel (config.maxRecentErrors). */
+    maxRecentErrors?: number;
+    /** History kept server-side, bounding the range selector (seconds). */
+    retentionSeconds?: number;
+}
+
+/**
+ * Runs in <head> before first paint so a dark-mode page never flashes white.
+ * An explicit choice (localStorage) wins; otherwise follow the OS setting.
+ */
+export const THEME_BOOT_SCRIPT = `(function(){try{var s=localStorage.getItem('statusDark');var d=s===null?!!(window.matchMedia&&matchMedia('(prefers-color-scheme: dark)').matches):s==='true';if(d)document.documentElement.classList.add('dark');}catch(e){}})();`;
+
+export function clientScript(inlineCharts: boolean, pollingInterval: number, options: ClientOptions = {}): string {
+    const {
+        stream = false,
+        maxRoutes = 5,
+        maxRecentErrors = 5,
+        retentionSeconds = 60
+    } = options;
     return `        (function() {
-            var isDark = localStorage.getItem('statusDark') === 'true';
-            if (isDark) document.body.classList.add('dark');
+            var root = document.documentElement;
+            function isDark() { return root.classList.contains('dark'); }
+            function gridColor() { return isDark() ? '#2a2a2a' : '#f0f0f0'; }
+
+            function storedTheme() { try { return localStorage.getItem('statusDark'); } catch (e) { return null; } }
+
+            function applyTheme(dark) {
+                root.classList.toggle('dark', dark);
+                if (themeBtn) themeBtn.setAttribute('aria-pressed', dark ? 'true' : 'false');
+                recolorCharts();
+            }
 
             window.toggleTheme = function() {
-                document.body.classList.toggle('dark');
-                localStorage.setItem('statusDark', document.body.classList.contains('dark'));
+                var dark = !isDark();
+                try { localStorage.setItem('statusDark', dark); } catch (e) {}
+                applyTheme(dark);
             };
             // Bound here rather than via an onclick attribute, which a nonce-based
             // CSP would block.
             var themeBtn = document.getElementById('themeToggle');
-            if (themeBtn) themeBtn.addEventListener('click', window.toggleTheme);
-
-            var gridColor = isDark ? '#2a2a2a' : '#f0f0f0';
+            if (themeBtn) {
+                themeBtn.addEventListener('click', window.toggleTheme);
+                themeBtn.setAttribute('aria-pressed', isDark() ? 'true' : 'false');
+            }
+            // Follow the OS theme until the user picks one explicitly.
+            if (window.matchMedia) {
+                var mq = matchMedia('(prefers-color-scheme: dark)');
+                var onScheme = function(e) { if (storedTheme() === null) applyTheme(e.matches); };
+                if (mq.addEventListener) mq.addEventListener('change', onScheme);
+                else if (mq.addListener) mq.addListener(onScheme);
+            }
 
             var chartConfig = {
                 responsive: true, maintainAspectRatio: false, animation: false,
                 plugins: { legend: { display: false } },
                 scales: {
                     x: { type: 'time', time: { unit: 'second' }, grid: { display: false }, ticks: { display: false } },
-                    y: { beginAtZero: true, grid: { color: gridColor, drawBorder: false }, ticks: { font: { size: 9 }, color: '#999', maxTicksLimit: 3 } }
+                    y: { beginAtZero: true, grid: { color: gridColor(), drawBorder: false }, ticks: { font: { size: 10 }, color: '#6b6b6b', maxTicksLimit: 3 } }
                 },
                 elements: { point: { radius: 0 }, line: { tension: 0.2, borderWidth: 1.5 } }
             };
+
+            var MAX_ROUTES = ${maxRoutes};
+            var MAX_ERRORS = ${maxRecentErrors};
+            var RETENTION = ${retentionSeconds};
 
             // Dependency-free inline renderer (no Chart.js / no CDN) when INLINE is true.
             var INLINE = ${inlineCharts ? 'true' : 'false'};
@@ -266,6 +322,7 @@ export function clientScript(inlineCharts: boolean, pollingInterval: number): st
                 canvas.width = Math.max(1, Math.round(w * dpr));
                 canvas.height = Math.max(1, Math.round(h * dpr));
                 var ctx = canvas.getContext('2d');
+                if (!ctx) return;
                 ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
                 ctx.clearRect(0, 0, w, h);
                 if (!points || points.length === 0) return;
@@ -313,8 +370,53 @@ export function clientScript(inlineCharts: boolean, pollingInterval: number): st
                 err: createChart('errChart', '#ef4444')
             };
 
+            // Re-theme Chart.js grids after a theme change (inline charts
+            // redraw with the next data frame).
+            function recolorCharts() {
+                if (typeof charts === 'undefined') return;
+                for (var k in charts) {
+                    var ch = charts[k];
+                    if (ch && !ch.inline && ch.options && ch.options.scales && ch.options.scales.y) {
+                        ch.options.scales.y.grid.color = gridColor();
+                        try { ch.update('none'); } catch (e) {}
+                    }
+                }
+            }
+
+            // Time range: offered only when the server keeps more than a minute.
+            var RANGES = [60, 300, 900, 3600].filter(function(r) { return r <= RETENTION; });
+            var range = RETENTION;
+            var lastCharts = null;
+            (function() {
+                var box = document.getElementById('rangeSelect');
+                if (!box || RANGES.length < 2) return;
+                var labels = { 60: '1m', 300: '5m', 900: '15m', 3600: '1h' };
+                box.hidden = false;
+                box.innerHTML = RANGES.map(function(r) {
+                    return '<button type="button" data-range="' + r + '" aria-pressed="' + (r === RANGES[RANGES.length - 1]) + '">' + labels[r] + '</button>';
+                }).join('');
+                range = RANGES[RANGES.length - 1];
+                box.addEventListener('click', function(e) {
+                    var r = e.target && e.target.getAttribute && e.target.getAttribute('data-range');
+                    if (!r) return;
+                    range = Number(r);
+                    var btns = box.querySelectorAll('button');
+                    for (var i = 0; i < btns.length; i++) btns[i].setAttribute('aria-pressed', btns[i] === e.target ? 'true' : 'false');
+                    if (lastCharts) renderCharts(lastCharts);
+                });
+            })();
+
+            function inRange(points) {
+                if (!points || !points.length) return points;
+                var cutoff = points[points.length - 1].timestamp - range * 1000;
+                var i = 0;
+                while (i < points.length && points[i].timestamp < cutoff) i++;
+                return i ? points.slice(i) : points;
+            }
+
             function updateChart(key, points) {
                 var chart = charts[key];
+                points = inRange(points);
                 if (!chart || !points) return;
                 if (chart.inline) { drawSpark(chart, points); return; }
                 try {
@@ -353,10 +455,11 @@ export function clientScript(inlineCharts: boolean, pollingInterval: number): st
                 var container = document.getElementById(containerId);
                 if (!container) return;
                 if (!routes || routes.length === 0) { container.innerHTML = '<div class="route-item"><span class="route-path">No data yet</span></div>'; return; }
-                container.innerHTML = routes.slice(0,5).map(function(r) {
+                container.innerHTML = routes.slice(0, MAX_ROUTES).map(function(r) {
                     var val = statKey === 'avgTime' ? fx(r.avgTime, 1) + 'ms' : (statKey === 'errors' ? r.errors : r.count);
                     var cls = isSlow && r.avgTime > 100 ? 'slow' : (statKey === 'errors' ? 'error' : '');
-                    return '<div class="route-item"><span class="route-path">' + esc(r.method) + ' ' + esc(r.path) + '</span><span class="route-stat ' + cls + '">' + esc(val) + '</span></div>';
+                    var label = esc(r.method) + ' ' + esc(r.path);
+                    return '<div class="route-item"><span class="route-path" title="' + label + '">' + label + '</span><span class="route-stat ' + cls + '">' + esc(val) + '</span></div>';
                 }).join('');
             }
 
@@ -375,7 +478,7 @@ export function clientScript(inlineCharts: boolean, pollingInterval: number): st
                 var panel = document.getElementById('errorsPanel');
                 if (!panel) return;
                 if (!errors || errors.length === 0) { panel.innerHTML = '<div style="color:var(--text-muted);font-size:12px;">No errors recorded</div>'; return; }
-                panel.innerHTML = errors.slice(0,5).map(function(e) {
+                panel.innerHTML = errors.slice(0, MAX_ERRORS).map(function(e) {
                     return '<div class="error-item"><div class="error-time">' + esc(new Date(e.timestamp).toLocaleTimeString()) + '</div><div class="error-path">' + esc(e.method) + ' ' + esc(e.path) + ' → ' + esc(e.status) + '</div></div>';
                 }).join('');
             }
@@ -406,7 +509,18 @@ export function clientScript(inlineCharts: boolean, pollingInterval: number): st
                 if (badge) badge.title = title || '';
             }
 
+            var ALERT_NAMES = { cpu: 'CPU', memory: 'Memory', responseTime: 'Response time', errorRate: 'Error rate', eventLoopLag: 'Event loop lag' };
+            var lastAlertText = '';
+            // Screen readers hear alert changes; colour alone isn't enough.
+            function announceAlerts(alerts) {
+                var active = [];
+                for (var k in ALERT_NAMES) if (alerts[k]) active.push(ALERT_NAMES[k]);
+                var text = active.length ? 'Alert: ' + active.join(', ') + ' above threshold' : '';
+                if (text !== lastAlertText) { lastAlertText = text; setText('alertsLive', text); }
+            }
+
             function applyAlertColors(alerts) {
+                announceAlerts(alerts);
                 setDanger('cpuVal', alerts.cpu);
                 setDanger('rtVal', alerts.responseTime);
                 setDanger('lagVal', alerts.eventLoopLag);
@@ -436,14 +550,8 @@ export function clientScript(inlineCharts: boolean, pollingInterval: number): st
                 setNum('p95', pct.p95, 1, 'ms');
                 setNum('p99', pct.p99, 1, 'ms');
 
-                updateChart('cpu', c.cpu);
-                updateChart('mem', c.memory);
-                updateChart('heap', c.heap);
-                updateChart('load', c.loadAvg);
-                updateChart('rt', c.responseTime);
-                updateChart('rps', c.rps);
-                updateChart('lag', c.eventLoopLag);
-                updateChart('err', c.errorRate);
+                lastCharts = c;
+                renderCharts(c);
 
                 renderRoutes('topRoutes', s.topRoutes, 'count', false);
                 renderRoutes('slowRoutes', s.slowestRoutes, 'avgTime', true);
@@ -467,6 +575,17 @@ export function clientScript(inlineCharts: boolean, pollingInterval: number): st
                 setText('platform', String(s.platform).split(' ')[0]);
                 setText('pid', s.pid);
                 setText('cpuCount', s.cpuCount);
+            }
+
+            function renderCharts(c) {
+                updateChart('cpu', c.cpu);
+                updateChart('mem', c.memory);
+                updateChart('heap', c.heap);
+                updateChart('load', c.loadAvg);
+                updateChart('rt', c.responseTime);
+                updateChart('rps', c.rps);
+                updateChart('lag', c.eventLoopLag);
+                updateChart('err', c.errorRate);
             }
 
             var INTERVAL = ${pollingInterval};
@@ -519,12 +638,67 @@ export function clientScript(inlineCharts: boolean, pollingInterval: number): st
                     });
             }
 
+            // Server-Sent Events (Node/Bun): one push per interval instead of a
+            // request per poll. Falls back to polling for good if the stream
+            // can't be opened (unsupported, capped with 503, blocked by a proxy)
+            // or is closed by the server (e.g. 401).
+            var STREAM = ${stream ? 'true' : 'false'} && typeof EventSource === 'function';
+            var es = null, streamOk = false, watchdog = null;
+            // A proxy that buffers responses (nginx with proxy_buffering on) lets
+            // the stream open but never delivers a frame. Give it a few
+            // intervals, then poll instead of showing an empty dashboard.
+            var STREAM_FIRST_FRAME_TIMEOUT = Math.max(5000, INTERVAL * 3);
+
+            function fallBackToPolling() {
+                clearTimeout(watchdog);
+                if (es) { es.close(); es = null; }
+                STREAM = false;
+                fetchMetrics();
+            }
+
+            function onFrame(data) {
+                failures = 0;
+                lastOk = Date.now();
+                try { render(data); } catch (e) { console.error('Failed to render metrics:', e); }
+                setBadge('live', 'Live', 'Updated ' + new Date(lastOk).toLocaleTimeString());
+            }
+
+            function startStream() {
+                es = new EventSource(basePath + 'api/stream');
+                clearTimeout(watchdog);
+                if (!streamOk) watchdog = setTimeout(fallBackToPolling, STREAM_FIRST_FRAME_TIMEOUT);
+                es.onmessage = function(ev) {
+                    streamOk = true;
+                    clearTimeout(watchdog);
+                    var data;
+                    try { data = JSON.parse(ev.data); } catch (e) { return; }
+                    onFrame(data);
+                };
+                es.onerror = function() {
+                    if (!es) return;
+                    if (!streamOk || es.readyState === 2) {
+                        fallBackToPolling();
+                        return;
+                    }
+                    // Still open: the browser is reconnecting.
+                    if (lastOk) setBadge('stale', 'Stale \u00b7 ' + Math.round((Date.now() - lastOk) / 1000) + 's', 'Reconnecting');
+                };
+            }
+
+            function stopStream() {
+                clearTimeout(watchdog);
+                if (es) { es.close(); es = null; }
+                // The next connection must prove itself again (re-arms the watchdog).
+                streamOk = false;
+            }
+
             document.addEventListener('visibilitychange', function() {
                 clearTimeout(timer);
-                if (!document.hidden) fetchMetrics();
+                if (document.hidden) { stopStream(); return; }
+                if (STREAM) startStream(); else fetchMetrics();
             });
 
-            fetchMetrics();
+            if (STREAM) startStream(); else fetchMetrics();
         })();`;
 }
 

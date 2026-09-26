@@ -3,8 +3,28 @@
     "compilerOptions": {
         "noEmit": true,
         "rootDir": ".",
-        "types": ["node", "vitest/globals"]
+        "types": [
+            "node",
+            "vitest/globals"
+        ],
+        "paths": {
+            "hono-status-monitor": [
+                "./src/index.ts"
+            ],
+            "hono-status-monitor/edge": [
+                "./src/index-edge.ts"
+            ]
+        }
     },
-    "include": ["src/**/*", "tests/**/*", "examples/**/*"],
-    "exclude": ["node_modules", "dist", "examples/bun.ts"]
+    "include": [
+        "src/**/*",
+        "tests/**/*",
+        "examples/**/*"
+    ],
+    "exclude": [
+        "node_modules",
+        "dist",
+        "examples/bun.ts",
+        "examples/deno.ts"
+    ]
 }

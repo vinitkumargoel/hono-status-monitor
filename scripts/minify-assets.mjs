@@ -11,6 +11,7 @@
 
 import { readFile, writeFile } from 'node:fs/promises';
 import { transform } from 'esbuild';
+import { readTemplate, spliceTemplate, minifyInterpolatedJs } from './minify-lib.mjs';
 
 /** Compiled modules holding embedded assets, and the CSS consts in each. */
 const TARGETS = [
@@ -20,42 +21,6 @@ const TARGETS = [
 ];
 
 const distUrl = (file) => new URL(`../dist/${file}`, import.meta.url);
-
-/**
- * Find the template literal that starts at `openIdx` (the opening backtick) and
- * return [inner, endIdx]. Handles escaped backticks; these literals contain no
- * nested template literals.
- */
-function readTemplate(src, openIdx) {
-    let i = openIdx + 1;
-    while (i < src.length) {
-        const ch = src[i];
-        if (ch === '\\') { i += 2; continue; }
-        if (ch === '`') return [src.slice(openIdx + 1, i), i];
-        i++;
-    }
-    throw new Error(`unterminated template literal at ${openIdx}`);
-}
-
-/** Replace a template literal's contents, preserving the backticks. */
-function spliceTemplate(src, openIdx, endIdx, replacement) {
-    return src.slice(0, openIdx + 1) + replacement + src.slice(endIdx);
-}
-
-/**
- * Minify JS that contains `${...}` interpolations by swapping each for an
- * identifier placeholder, minifying, then restoring. The placeholders are valid
- * expressions, so the result stays parseable.
- */
-async function minifyInterpolatedJs(code) {
-    const subs = [];
-    const guarded = code.replace(/\$\{[^{}]*\}/g, (match) => {
-        subs.push(match);
-        return `__ITP${subs.length - 1}__`;
-    });
-    const { code: out } = await transform(guarded, { loader: 'js', minify: true });
-    return out.replace(/__ITP(\d+)__/g, (_, i) => subs[Number(i)]);
-}
 
 /** IDs the client script drives; a dropped card would silently stop updating. */
 const REQUIRED_IDS = {
