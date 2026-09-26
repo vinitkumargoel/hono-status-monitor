@@ -8,24 +8,26 @@ import type { StatusMonitorConfig } from './types.js';
 import { createEdgeStatusMonitor } from './edge-status.js';
 
 // Re-export types (these have no Node.js deps)
-export type {
-    StatusMonitorConfig,
-    MetricsSnapshot,
-    ChartData,
-    RouteStats,
-    ErrorEntry,
-    PercentileData,
-    AlertStatus,
-    AlertEvent,
-    HealthReport,
-    NamedHealthResult,
-    StatusStore
-} from './types.js';
+export * from './types.js';
 
 export { createEdgeMonitor, type EdgeMonitor } from './monitor-edge.js';
-export { generateEdgeDashboard } from './dashboard.js';
-export { toPrometheus } from './format.js';
+export { generateEdgeDashboard, type EdgeDashboardProps } from './dashboard-edge.js';
+export { escapeHtml, toPrometheus } from './format.js';
 export { mergeSnapshots, generateInstanceId } from './edge-store.js';
+export { createMiddleware, createRequestTrackingMiddleware } from './request-tracking.js';
+
+// Platform helpers are dependency-free and behave the same on every runtime, so
+// they are exported here too. This keeps the edge entry close to a drop-in
+// replacement for the main entry — only the genuinely Node-only APIs (createMonitor, cluster helpers,
+// generateDashboard) are absent.
+export {
+    detectPlatform,
+    isNodeEnvironment,
+    isBunEnvironment,
+    isCloudflareEnvironment,
+    isEdgeEnvironment,
+    getPlatformInfo
+} from './platform.js';
 
 /**
  * Create a status monitor for Edge/Cloudflare Workers environments

@@ -52,6 +52,8 @@ function getResponseStatus(c: any, error?: unknown): number {
 
 /**
  * Create Hono middleware for tracking requests.
+ *
+ * Also exported as `createMiddleware` for backwards compatibility.
  */
 export function createRequestTrackingMiddleware(monitor: TrackableMonitor) {
     return async (c: any, next: () => Promise<void>) => {
@@ -79,3 +81,9 @@ export function createRequestTrackingMiddleware(monitor: TrackableMonitor) {
         }
     };
 }
+
+/**
+ * Alias of {@link createRequestTrackingMiddleware}. Kept as the name the package
+ * has always exported; both are supported.
+ */
+export const createMiddleware = createRequestTrackingMiddleware;

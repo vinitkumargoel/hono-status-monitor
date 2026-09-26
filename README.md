@@ -54,7 +54,7 @@ serve({ fetch: app.fetch, port: 3000 });        // or Bun.serve({ fetch: app.fet
 
 ## Cloudflare Workers / Edge
 
-Use the `/edge` entry (zero Node.js deps — the main entry pulls in `os`/`cluster` and won't bundle for Workers):
+Use the `/edge` entry (zero Node.js deps):
 
 ```typescript
 import { Hono } from 'hono';
@@ -68,6 +68,12 @@ export default app;
 ```
 
 Edge exposes request metrics only (CPU/memory/heap/event-loop/load and the SSE stream are unavailable). Each isolate keeps its own counters.
+
+The bare `hono-status-monitor` specifier still resolves to the main (Node) entry on every runtime, exactly as in 1.0.x — Workers using `nodejs_compat` that rely on it keep the same behavior. Import `/edge` to get the smaller, Node-free build.
+
+### Bundle size
+
+Roughly 31 KB minified (10 KB gzipped) for a Worker using the `/edge` entry, down from 73 KB in 1.0.x. The dashboard markup is loaded through a dynamic `import()`, so bundlers with code splitting turned on keep it out of the entry chunk — that drops the edge entry to about 13 KB.
 
 ## Endpoints
 
@@ -174,9 +180,18 @@ Route paths are HTML-escaped before rendering, so hostile request paths can't in
 
 The status surface is **public by default** — anyone who can reach the mounted path gets the dashboard, `/api/metrics`, `/api/stream`, `/prometheus` and `/health`. Set `authorize` (or front it with your own auth) in any environment where that's not acceptable. Note that when `authorize` is set it also gates `/health`; if a load balancer or k8s liveness probe hits `/health` unauthenticated, either exempt that path in your own middleware or point the probe at an unguarded route.
 
-## Notes for existing users (1.0.9)
+## Notes for existing users (1.1.0)
 
-All changes are backward-compatible with the documented `statusMonitor()` factory. Two things worth a glance if you depend on internals:
+Internals were restructured to cut bundle size; the documented `statusMonitor()` factory is unchanged. If you import internals directly:
+
+- **`createMiddleware` moved** from `middleware.js` to `request-tracking.js`. It is still exported from the package root and still works; only a deep path import into `dist/middleware.js` would break, and the `exports` map already blocked those.
+- **The dashboard module split** into `dashboard-assets` (shared CSS + client script), `dashboard` (Node) and `dashboard-edge` (edge). `generateDashboard` and `generateEdgeDashboard` are still exported from the package root.
+- **Health-check latency on edge** is measured with `performance.now()` and reported to two decimals, matching Node. It was whole milliseconds before.
+- **Route eviction is now genuinely least-recently-used.** At `maxTrackedRoutes`, eviction previously compared a `lastAccess` timestamp with 1 ms granularity; under real traffic several routes share the same millisecond, so it fell back to scan order and could evict the *most* recently used route. It now tracks recency directly. A health check that returns `latencyMs: 0` is also reported as `0` instead of being replaced by the measured time.
+
+### Notes for 1.0.9 users
+
+Two things worth a glance if you depend on internals:
 
 - **`getDatabaseStats` / `database` in the snapshot** now reports real pool numbers from your `healthCheck`'s `details.poolSize` / `details.availableConnections`, falling back to `0` instead of the previous hardcoded `10`. If your dashboards keyed off the old constant, surface the real values via `healthCheck`.
 - The exported **`StatusMonitor` type** dropped three members that the factory never actually returned (`start`, `getDashboard`, `config`) and added `getHealth`, `resetStats`, `isEdgeMode`, `routes`. Runtime behavior is unchanged; only hand-written `: StatusMonitor` annotations against the old shape need updating.

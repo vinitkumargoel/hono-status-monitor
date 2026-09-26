@@ -8,17 +8,12 @@ import { monitorEventLoopDelay, PerformanceObserver } from 'perf_hooks';
 import type {
     StatusMonitorConfig,
     MetricDataPoint,
-    StatusCodeCount,
-    RouteStats,
-    ErrorEntry,
     AlertStatus,
     AlertEvent,
     DatabaseStats,
     HealthCheckResult,
     MetricsSnapshot,
     ChartData,
-    NamedHealthResult,
-    HealthReport,
     StatusStore,
     WorkerMetricsMessage
 } from './types.js';
@@ -30,6 +25,7 @@ import {
 } from './cluster.js';
 import { calculatePercentiles, defaultNormalizePath, formatUptime, round } from './metrics-utils.js';
 import { detectPlatform } from './platform.js';
+import { createStatsCore } from './stats-core.js';
 
 // Default configuration
 const DEFAULT_CONFIG: Required<StatusMonitorConfig> = {
@@ -93,26 +89,13 @@ export function createMonitor(userConfig: StatusMonitorConfig = {}) {
     let eventLoopLagHistory: MetricDataPoint[] = [];
     let errorRateHistory: MetricDataPoint[] = [];
 
-    // Request tracking
-    let requestCount = 0;
-    let lastRequestCount = 0;
     let lastRpsUpdateTime = Date.now();
-    let totalResponseTime = 0;
-    let responseTimeCount = 0;
-    let statusCodes: StatusCodeCount = {};
-    let totalRequests = 0;
-    let activeConnections = 0;
 
-    // Route tracking
-    const routeStats: Map<string, RouteStats> = new Map();
-    const recentErrors: ErrorEntry[] = [];
-
-    // Response time samples for percentiles
-    let responseTimeSamples: number[] = [];
-
-    // Rate limit tracking
-    let rateLimitBlocked = 0;
-    let rateLimitTotal = 0;
+    // Shared request/route/error accounting.
+    const core = createStatsCore(config, {
+        uptimeSeconds: () => Math.round(process.uptime())
+    });
+    const { state, getErrorRate, addToHistory } = core;
 
     // GC tracking
     let lastHeapUsed = 0;
@@ -300,32 +283,6 @@ export function createMonitor(userConfig: StatusMonitorConfig = {}) {
         return round(Math.max(0, actualInterval - config.updateInterval), 1);
     }
 
-    function getTopRoutes(): RouteStats[] {
-        return Array.from(routeStats.values())
-            .sort((a, b) => b.count - a.count)
-            .slice(0, config.maxRoutes);
-    }
-
-    function getSlowestRoutes(): RouteStats[] {
-        return Array.from(routeStats.values())
-            .filter(r => r.count > 0)
-            .sort((a, b) => b.avgTime - a.avgTime)
-            .slice(0, config.maxRoutes);
-    }
-
-    function getErrorRoutes(): RouteStats[] {
-        return Array.from(routeStats.values())
-            .filter(r => r.errors > 0)
-            .sort((a, b) => b.errors - a.errors)
-            .slice(0, config.maxRoutes);
-    }
-
-    function getErrorRate(): number {
-        const totalErrors = Array.from(routeStats.values()).reduce((sum, r) => sum + r.errors, 0);
-        if (totalRequests === 0) return 0;
-        return round((totalErrors / totalRequests) * 100);
-    }
-
     function checkAlerts(): AlertStatus {
         const cpu = cpuHistory.length > 0 ? cpuHistory[cpuHistory.length - 1].value : 0;
         const memory = getMemoryPercent();
@@ -412,52 +369,6 @@ export function createMonitor(userConfig: StatusMonitorConfig = {}) {
         }
     }
 
-    // Run all configured named health checks (falls back to the single healthCheck).
-    async function getHealthReport(): Promise<HealthReport> {
-        const checks = config.healthChecks
-            ? Object.entries(config.healthChecks)
-            : ([['database', config.healthCheck]] as [string, () => Promise<HealthCheckResult>][]);
-
-        const results: NamedHealthResult[] = await Promise.all(
-            checks.map(async ([name, fn]) => {
-                try {
-                    const start = performance.now();
-                    const r = await fn();
-                    return {
-                        name: r.name || name,
-                        connected: r.connected,
-                        latencyMs: r.latencyMs || round(performance.now() - start),
-                        details: r.details
-                    };
-                } catch (err) {
-                    return {
-                        name,
-                        connected: false,
-                        latencyMs: 0,
-                        details: { error: err instanceof Error ? err.message : String(err) }
-                    };
-                }
-            })
-        );
-
-        return {
-            status: results.every(r => r.connected) ? 'ok' : 'degraded',
-            uptime: Math.round(process.uptime()),
-            timestamp: Date.now(),
-            checks: results
-        };
-    }
-
-    function addToHistory(history: MetricDataPoint[], value: number): void {
-        const now = Date.now();
-        history.push({ timestamp: now, value });
-
-        const cutoff = now - (config.retentionSeconds * 1000);
-        while (history.length > 0 && history[0].timestamp < cutoff) {
-            history.shift();
-        }
-    }
-
     async function updateMetrics(): Promise<void> {
         const heap = getHeapUsage();
         measureHeapGrowth(heap.used);
@@ -475,22 +386,18 @@ export function createMonitor(userConfig: StatusMonitorConfig = {}) {
 
         const now = Date.now();
         const elapsedSeconds = Math.max((now - lastRpsUpdateTime) / 1000, config.updateInterval / 1000);
-        const currentRps = round((requestCount - lastRequestCount) / elapsedSeconds);
-        lastRequestCount = requestCount;
+        const currentRps = round((state.requestCount - state.lastRequestCount) / elapsedSeconds);
+        state.lastRequestCount = state.requestCount;
         lastRpsUpdateTime = now;
         addToHistory(rpsHistory, currentRps);
 
-        const avgResponseTime = responseTimeCount > 0
-            ? round(totalResponseTime / responseTimeCount)
+        const avgResponseTime = state.responseTimeCount > 0
+            ? round(state.totalResponseTime / state.responseTimeCount)
             : 0;
         addToHistory(responseTimeHistory, avgResponseTime);
 
-        totalResponseTime = 0;
-        responseTimeCount = 0;
-
-        if (responseTimeSamples.length > 1000) {
-            responseTimeSamples = responseTimeSamples.slice(-500);
-        }
+        state.totalResponseTime = 0;
+        state.responseTimeCount = 0;
 
         // In cluster mode, send metrics to master for aggregation
         if (config.clusterMode && process.send) {
@@ -519,9 +426,9 @@ export function createMonitor(userConfig: StatusMonitorConfig = {}) {
                 ? responseTimeHistory[responseTimeHistory.length - 1].value
                 : 0,
             rps: rpsHistory.length > 0 ? rpsHistory[rpsHistory.length - 1].value : 0,
-            statusCodes: { ...statusCodes },
-            totalRequests,
-            activeConnections,
+            statusCodes: { ...state.statusCodes },
+            totalRequests: state.totalRequests,
+            activeConnections: state.activeConnections,
             eventLoopLag: eventLoopLagHistory.length > 0
                 ? eventLoopLagHistory[eventLoopLagHistory.length - 1].value
                 : 0,
@@ -530,11 +437,11 @@ export function createMonitor(userConfig: StatusMonitorConfig = {}) {
             nodeVersion: getRuntimeVersion(),
             pid: process.pid,
             cpuCount: getCpuInfo().length,
-            percentiles: calculatePercentiles(responseTimeSamples),
-            topRoutes: getTopRoutes(),
-            slowestRoutes: getSlowestRoutes(),
-            errorRoutes: getErrorRoutes(),
-            recentErrors: [...recentErrors],
+            percentiles: calculatePercentiles(state.responseTimeSamples),
+            topRoutes: core.getTopRoutes(),
+            slowestRoutes: core.getSlowestRoutes(),
+            errorRoutes: core.getErrorRoutes(),
+            recentErrors: [...state.recentErrors],
             alerts: checkAlerts(),
             gc: {
                 collections: gcCollections,
@@ -542,7 +449,7 @@ export function createMonitor(userConfig: StatusMonitorConfig = {}) {
                 heapGrowthRate: round(heapGrowthRate)
             },
             database: db,
-            rateLimitStats: { blocked: rateLimitBlocked, total: rateLimitTotal },
+            rateLimitStats: { blocked: state.rateLimitBlocked, total: state.rateLimitTotal },
             errorRate: getErrorRate()
         };
     }
@@ -558,94 +465,6 @@ export function createMonitor(userConfig: StatusMonitorConfig = {}) {
             eventLoopLag: [...eventLoopLagHistory],
             errorRate: [...errorRateHistory]
         };
-    }
-
-    function trackRequest(path: string, method: string): void {
-        requestCount++;
-        totalRequests++;
-        activeConnections++;
-
-        const normalizedPath = config.normalizePath(path);
-        const key = `${method}:${normalizedPath}`;
-
-        if (!routeStats.has(key)) {
-            evictRoutesIfNeeded();
-            routeStats.set(key, {
-                path: normalizedPath,
-                method,
-                count: 0,
-                totalTime: 0,
-                avgTime: 0,
-                minTime: Infinity,
-                maxTime: 0,
-                errors: 0,
-                lastAccess: Date.now()
-            });
-        }
-    }
-
-    // Cap distinct tracked routes; evict least-recently-accessed to bound memory.
-    function evictRoutesIfNeeded(): void {
-        if (routeStats.size < config.maxTrackedRoutes) return;
-        let oldestKey: string | null = null;
-        let oldestAccess = Infinity;
-        for (const [k, v] of routeStats) {
-            if (v.lastAccess < oldestAccess) {
-                oldestAccess = v.lastAccess;
-                oldestKey = k;
-            }
-        }
-        if (oldestKey) routeStats.delete(oldestKey);
-    }
-
-    function trackRequestComplete(
-        path: string,
-        method: string,
-        durationMs: number,
-        statusCode: number
-    ): void {
-        activeConnections = Math.max(0, activeConnections - 1);
-
-        totalResponseTime += durationMs;
-        responseTimeCount++;
-        responseTimeSamples.push(durationMs);
-
-        const codeStr = statusCode.toString();
-        statusCodes[codeStr] = (statusCodes[codeStr] || 0) + 1;
-
-        const normalizedPath = config.normalizePath(path);
-        const key = `${method}:${normalizedPath}`;
-        const stats = routeStats.get(key);
-
-        if (stats) {
-            stats.count++;
-            stats.totalTime += durationMs;
-            stats.avgTime = stats.totalTime / stats.count;
-            stats.minTime = Math.min(stats.minTime, durationMs);
-            stats.maxTime = Math.max(stats.maxTime, durationMs);
-            stats.lastAccess = Date.now();
-
-            if (statusCode >= 400) {
-                stats.errors++;
-
-                recentErrors.unshift({
-                    timestamp: Date.now(),
-                    path: normalizedPath,
-                    method,
-                    status: statusCode,
-                    message: `${method} ${normalizedPath} returned ${statusCode}`
-                });
-
-                while (recentErrors.length > config.maxRecentErrors) {
-                    recentErrors.pop();
-                }
-            }
-        }
-    }
-
-    function trackRateLimitEvent(blocked: boolean): void {
-        rateLimitTotal++;
-        if (blocked) rateLimitBlocked++;
     }
 
     function start(): void {
@@ -679,18 +498,7 @@ export function createMonitor(userConfig: StatusMonitorConfig = {}) {
         rpsHistory = [];
         eventLoopLagHistory = [];
         errorRateHistory = [];
-        requestCount = 0;
-        lastRequestCount = 0;
-        totalResponseTime = 0;
-        responseTimeCount = 0;
-        statusCodes = {};
-        totalRequests = 0;
-        activeConnections = 0;
-        routeStats.clear();
-        recentErrors.length = 0;
-        responseTimeSamples = [];
-        rateLimitBlocked = 0;
-        rateLimitTotal = 0;
+        core.resetCounters();
         gcCollections = 0;
         gcPauseTimeMs = 0;
     }
@@ -737,12 +545,12 @@ export function createMonitor(userConfig: StatusMonitorConfig = {}) {
 
     return {
         config,
-        trackRequest,
-        trackRequestComplete,
-        trackRateLimitEvent,
+        trackRequest: core.trackRequest,
+        trackRequestComplete: core.trackRequestComplete,
+        trackRateLimitEvent: core.trackRateLimitEvent,
         getMetricsSnapshot: getAggregatedSnapshot,
         getChartData: getAggregatedCharts,
-        getHealthReport,
+        getHealthReport: core.getHealthReport,
         resetStats,
         start,
         stop,
