@@ -3,8 +3,8 @@
 // Real-time server metrics collection (polling-based, no external dependencies)
 // =============================================================================
 
-import * as os from 'os';
-import { monitorEventLoopDelay, PerformanceObserver } from 'perf_hooks';
+import * as os from 'node:os';
+import { monitorEventLoopDelay, PerformanceObserver } from 'node:perf_hooks';
 import type {
     StatusMonitorConfig,
     MetricDataPoint,
@@ -14,18 +14,19 @@ import type {
     HealthCheckResult,
     MetricsSnapshot,
     ChartData,
-    StatusStore,
-    WorkerMetricsMessage
+    StatusStore
 } from './types.js';
 import {
     isClusterWorker,
     sendMetricsToMaster,
     createClusterAggregator,
+    isWorkerMetricsMessage,
     type ClusterAggregator
 } from './cluster.js';
 import { calculatePercentiles, defaultNormalizePath, formatUptime, round } from './metrics-utils.js';
 import { detectPlatform } from './platform.js';
-import { createStatsCore } from './stats-core.js';
+import { createStatsCore, DEFAULT_HEALTH_CHECK, withTimeout } from './stats-core.js';
+import { sanitizeConfig } from './config.js';
 
 // Default configuration
 const DEFAULT_CONFIG: Required<StatusMonitorConfig> = {
@@ -45,7 +46,8 @@ const DEFAULT_CONFIG: Required<StatusMonitorConfig> = {
         errorRate: 5,
         eventLoopLag: 100
     },
-    healthCheck: async () => ({ connected: true, latencyMs: 0 }),
+    healthCheck: DEFAULT_HEALTH_CHECK,
+    healthCheckTimeout: 5000,
     healthChecks: undefined as unknown as Record<string, () => Promise<HealthCheckResult>>,
     normalizePath: (path: string) => path,
     clusterMode: undefined as unknown as boolean, // Will be auto-detected
@@ -56,6 +58,7 @@ const DEFAULT_CONFIG: Required<StatusMonitorConfig> = {
     chartjsUrl: undefined as unknown as string,
     chartAdapterUrl: undefined as unknown as string,
     inlineCharts: false,
+    securityHeaders: true,
     store: undefined as unknown as StatusStore,
     instanceId: undefined as unknown as string,
     storeWriteInterval: 60000
@@ -67,13 +70,13 @@ const DEFAULT_CONFIG: Required<StatusMonitorConfig> = {
 export function createMonitor(userConfig: StatusMonitorConfig = {}) {
     const inClusterMode = userConfig.clusterMode ?? isClusterWorker();
 
-    const config: Required<StatusMonitorConfig> = {
+    const config: Required<StatusMonitorConfig> = sanitizeConfig({
         ...DEFAULT_CONFIG,
         ...userConfig,
         alerts: { ...DEFAULT_CONFIG.alerts, ...userConfig.alerts },
         normalizePath: userConfig.normalizePath || defaultNormalizePath,
         clusterMode: inClusterMode
-    };
+    }, DEFAULT_CONFIG);
 
     const clusterAggregator: ClusterAggregator | null = inClusterMode
         ? createClusterAggregator({ maxRoutes: config.maxRoutes })
@@ -340,7 +343,7 @@ export function createMonitor(userConfig: StatusMonitorConfig = {}) {
     async function getDatabaseStats(): Promise<DatabaseStats> {
         try {
             const start = performance.now();
-            const result = await config.healthCheck();
+            const result = await withTimeout(config.healthCheck, config.healthCheckTimeout, 'healthCheck');
             dbLatency = round(performance.now() - start);
 
             // Pool figures are only meaningful if the health check surfaces them.
@@ -411,6 +414,7 @@ export function createMonitor(userConfig: StatusMonitorConfig = {}) {
     async function getMetricsSnapshot(dbStats?: DatabaseStats): Promise<MetricsSnapshot> {
         const heap = getHeapUsage();
         const db = dbStats || await getDatabaseStats();
+        const routeLists = core.getRouteLists();
 
         return {
             timestamp: Date.now(),
@@ -438,9 +442,9 @@ export function createMonitor(userConfig: StatusMonitorConfig = {}) {
             pid: process.pid,
             cpuCount: getCpuInfo().length,
             percentiles: calculatePercentiles(state.responseTimeSamples),
-            topRoutes: core.getTopRoutes(),
-            slowestRoutes: core.getSlowestRoutes(),
-            errorRoutes: core.getErrorRoutes(),
+            topRoutes: routeLists.topRoutes,
+            slowestRoutes: routeLists.slowestRoutes,
+            errorRoutes: routeLists.errorRoutes,
             recentErrors: [...state.recentErrors],
             alerts: checkAlerts(),
             gc: {
@@ -472,6 +476,9 @@ export function createMonitor(userConfig: StatusMonitorConfig = {}) {
             lastLoopTime = Date.now();
             enableInstrumentation();
             metricsInterval = setInterval(updateMetrics, config.updateInterval);
+            // Don't hold the process open: a script or test that forgets stop()
+            // should still exit once its own work is done.
+            metricsInterval.unref?.();
             console.log('📊 Status monitor started');
         }
     }
@@ -510,13 +517,8 @@ export function createMonitor(userConfig: StatusMonitorConfig = {}) {
         // Set up IPC message handler for cluster mode
         if (config.clusterMode && clusterAggregator) {
             process.on('message', (message: unknown) => {
-                if (
-                    message &&
-                    typeof message === 'object' &&
-                    'type' in message &&
-                    (message as WorkerMetricsMessage).type === 'worker-metrics'
-                ) {
-                    clusterAggregator.updateWorkerMetrics(message as WorkerMetricsMessage);
+                if (isWorkerMetricsMessage(message)) {
+                    clusterAggregator.updateWorkerMetrics(message);
                 }
             });
             console.log('📊 Status monitor initialized (cluster mode - aggregating workers)');

@@ -1,6 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { createMonitor } from '../src/monitor';
-import { StatusMonitorConfig } from '../src/types';
 
 describe('createMonitor', () => {
     let monitor: ReturnType<typeof createMonitor>;

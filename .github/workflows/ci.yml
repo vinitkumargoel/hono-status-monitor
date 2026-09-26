@@ -1,0 +1,98 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    name: Typecheck, lint, test, build (Node ${{ matrix.node }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        node: [20, 22, 24]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+          cache: npm
+      # `npm ci` fails if package-lock.json is out of sync with package.json.
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm run lint
+      - run: npm run test:coverage
+      - run: npm run build
+      - run: npm run smoke
+      - run: npm run size
+      - if: matrix.node == 22
+        run: npm run check:package
+
+  # The package as a consumer installs it, on every runtime we claim to support.
+  consumer:
+    name: Packed tarball on ${{ matrix.runtime }}
+    needs: check
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        runtime: [node-18, node-24, bun, deno]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm pack
+      - name: Install tarball into a scratch project
+        run: |
+          mkdir -p "$RUNNER_TEMP/consumer"
+          cd "$RUNNER_TEMP/consumer"
+          npm init -y >/dev/null
+          npm pkg set type=module
+          npm install "$GITHUB_WORKSPACE"/hono-status-monitor-*.tgz hono
+          cp "$GITHUB_WORKSPACE/scripts/smoke.mjs" .
+      - if: startsWith(matrix.runtime, 'node-')
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.runtime == 'node-18' && 18 || 24 }}
+      - if: startsWith(matrix.runtime, 'node-')
+        run: node smoke.mjs
+        working-directory: ${{ runner.temp }}/consumer
+      - if: matrix.runtime == 'bun'
+        uses: oven-sh/setup-bun@v2
+      - if: matrix.runtime == 'bun'
+        run: bun smoke.mjs
+        working-directory: ${{ runner.temp }}/consumer
+      - if: matrix.runtime == 'deno'
+        uses: denoland/setup-deno@v2
+        with:
+          deno-version: v2.x
+      - if: matrix.runtime == 'deno'
+        run: deno run -A --node-modules-dir=manual smoke.mjs
+        working-directory: ${{ runner.temp }}/consumer
+
+  # The lowest hono the peer range admits.
+  hono-floor:
+    name: Tests against hono 4.0.0
+    needs: check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm install --no-save hono@4.0.0
+      - run: npx vitest run

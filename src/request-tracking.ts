@@ -17,8 +17,11 @@ function normalizeMountPath(path: string): string {
 }
 
 export function isMonitorPath(requestPath: string, monitorPath: string): boolean {
-    const normalizedMonitorPath = normalizeMountPath(monitorPath);
-    return requestPath === normalizedMonitorPath || requestPath.startsWith(`${normalizedMonitorPath}/`);
+    return matchesMountPath(requestPath, normalizeMountPath(monitorPath));
+}
+
+function matchesMountPath(requestPath: string, mountPath: string): boolean {
+    return requestPath === mountPath || requestPath.startsWith(`${mountPath}/`);
 }
 
 function getErrorStatus(error: unknown): number | undefined {
@@ -56,10 +59,14 @@ function getResponseStatus(c: any, error?: unknown): number {
  * Also exported as `createMiddleware` for backwards compatibility.
  */
 export function createRequestTrackingMiddleware(monitor: TrackableMonitor) {
+    // The mount path is fixed for the monitor's lifetime; normalize it once
+    // rather than running the regex on every request.
+    const mountPath = normalizeMountPath(monitor.config.path);
+
     return async (c: any, next: () => Promise<void>) => {
         const path = c.req.path ?? new URL(c.req.url).pathname;
 
-        if (isMonitorPath(path, monitor.config.path)) {
+        if (matchesMountPath(path, mountPath)) {
             await next();
             return;
         }

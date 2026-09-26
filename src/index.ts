@@ -37,10 +37,12 @@ export {
 } from './cluster.js';
 export { escapeHtml, toPrometheus } from './format.js';
 export { mergeSnapshots, generateInstanceId } from './edge-store.js';
+export { defaultNormalizePath } from './metrics-utils.js';
 
 /**
- * Create a complete status monitor with routes, middleware, and WebSocket
- * Automatically detects the runtime environment and uses the appropriate implementation
+ * Create a complete status monitor: tracking middleware plus dashboard, JSON,
+ * SSE, health and Prometheus routes. Detects the runtime and picks the full
+ * (Node/Bun) or request-only (edge) collector.
  * 
  * @example Node.js
  * ```typescript
@@ -54,14 +56,13 @@ export { mergeSnapshots, generateInstanceId } from './edge-store.js';
  * app.use('*', monitor.middleware);
  * app.route('/status', monitor.routes);
  * 
- * const server = serve({ fetch: app.fetch, port: 3000 });
- * monitor.initSocket(server);
+ * serve({ fetch: app.fetch, port: 3000 });
  * ```
  * 
- * @example Cloudflare Workers
+ * @example Cloudflare Workers — prefer the Node-free `/edge` entry
  * ```typescript
  * import { Hono } from 'hono';
- * import { statusMonitor } from 'hono-status-monitor';
+ * import { statusMonitor } from 'hono-status-monitor/edge';
  * 
  * const app = new Hono();
  * const monitor = statusMonitor();
@@ -96,12 +97,12 @@ function createNodeStatusMonitor(config: StatusMonitorConfig = {}) {
     return assembleStatusMonitor(monitor, {
         // Lazily loaded so the dashboard markup can be split out of the entry
         // chunk by bundlers that support code splitting.
-        renderDashboard: async (m, snapshot) => {
+        renderDashboard: async (m, snapshot, { nonce }) => {
             const { generateDashboard } = await import('./dashboard.js');
             return generateDashboard({
                 hostname: snapshot.hostname,
                 uptime: m.formatUptime(snapshot.uptime),
-                socketPath: m.config.socketPath,
+                nonce,
                 title: m.config.title,
                 pollingInterval: m.config.pollingInterval,
                 chartjsUrl: m.config.chartjsUrl,

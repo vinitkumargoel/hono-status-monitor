@@ -14,6 +14,7 @@ export { createEdgeMonitor, type EdgeMonitor } from './monitor-edge.js';
 export { generateEdgeDashboard, type EdgeDashboardProps } from './dashboard-edge.js';
 export { escapeHtml, toPrometheus } from './format.js';
 export { mergeSnapshots, generateInstanceId } from './edge-store.js';
+export { defaultNormalizePath } from './metrics-utils.js';
 export { createMiddleware, createRequestTrackingMiddleware } from './request-tracking.js';
 
 // Platform helpers are dependency-free and behave the same on every runtime, so

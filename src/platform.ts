@@ -24,32 +24,29 @@ export function detectPlatform(): Platform {
         return 'node';
     }
 
-    // Check for Cloudflare Workers
-    // Cloudflare Workers have specific globals and navigator.userAgent
-    if (typeof globalThis !== 'undefined') {
-        // Cloudflare Workers environment check
-        // @ts-ignore - navigator may not exist in all environments
-        const userAgent = typeof navigator !== 'undefined' ? navigator?.userAgent : '';
-        if (typeof userAgent === 'string' && userAgent.includes('Cloudflare-Workers')) {
-            return 'cloudflare';
-        }
+    const g = globalThis as {
+        navigator?: { userAgent?: unknown };
+        caches?: { default?: unknown };
+        Deno?: unknown;
+        EdgeRuntime?: unknown;
+    };
 
-        // Check for caches API which exists in Cloudflare Workers
-        // @ts-ignore - caches may not exist
-        if (typeof caches !== 'undefined' && typeof caches.default !== 'undefined') {
-            return 'cloudflare';
-        }
+    // Check for Cloudflare Workers (navigator.userAgent, then the caches.default API)
+    const userAgent = g.navigator?.userAgent;
+    if (typeof userAgent === 'string' && userAgent.includes('Cloudflare-Workers')) {
+        return 'cloudflare';
+    }
+    if (typeof g.caches !== 'undefined' && typeof g.caches.default !== 'undefined') {
+        return 'cloudflare';
     }
 
     // Check for Deno
-    // @ts-ignore - Deno global
-    if (typeof Deno !== 'undefined') {
+    if (typeof g.Deno !== 'undefined') {
         return 'edge';
     }
 
     // Generic edge runtime (Vercel Edge, etc.)
-    // @ts-ignore - EdgeRuntime global may not exist in all environments
-    if (typeof EdgeRuntime !== 'undefined') {
+    if (typeof g.EdgeRuntime !== 'undefined') {
         return 'edge';
     }
 

@@ -7,7 +7,9 @@
 import { Hono } from 'hono';
 import type { MetricsSnapshot, ChartData, HealthReport, StatusMonitorConfig } from './types.js';
 import { createRequestTrackingMiddleware } from './request-tracking.js';
-import { createAuthGuard, registerCommonRoutes } from './routes.js';
+import { createAuthGuard, registerCommonRoutes, NO_STORE } from './routes.js';
+import { dashboardSecurityHeaders, generateNonce } from './security.js';
+import { DEFAULT_ADAPTER_URL, DEFAULT_CHARTJS_URL } from './chart-cdn.js';
 
 /**
  * The surface a monitor must expose to be assembled into a status monitor.
@@ -36,7 +38,11 @@ export interface AssembleOptions<
      * can lazily `import()` the dashboard module instead of pulling ~27 KB of
      * markup into the entry bundle.
      */
-    renderDashboard: (monitor: M, snapshot: MetricsSnapshot) => string | Promise<string>;
+    renderDashboard: (
+        monitor: M,
+        snapshot: MetricsSnapshot,
+        extras: { nonce: string }
+    ) => string | Promise<string>;
     /** Register the SSE `/api/stream` route. Off on edge isolates. */
     enableStream: boolean;
     /** Reported on the returned handle and used by consumers to branch. */
@@ -69,18 +75,30 @@ export function assembleStatusMonitor<
     const guard = createAuthGuard(monitor.config.authorize);
     if (guard) routes.use('*', guard);
 
+    // Script origins the dashboard may load, for the CSP.
+    const cfg = monitor.config;
+    const scriptUrls = cfg.inlineCharts
+        ? []
+        : [cfg.chartjsUrl ?? DEFAULT_CHARTJS_URL, cfg.chartAdapterUrl ?? DEFAULT_ADAPTER_URL];
+
     // Dashboard page
     routes.get('/', async (c) => {
         const snapshot = await monitor.getMetricsSnapshot();
-        return c.html(await options.renderDashboard(monitor, snapshot));
+        const nonce = generateNonce();
+        const html = await options.renderDashboard(monitor, snapshot, { nonce });
+        const headers = cfg.securityHeaders === false
+            ? NO_STORE
+            : { ...NO_STORE, ...dashboardSecurityHeaders(nonce, scriptUrls) };
+        return c.html(html, 200, headers);
     });
 
     // JSON API endpoint
     routes.get('/api/metrics', async (c) => {
-        return c.json({
-            snapshot: await monitor.getMetricsSnapshot(),
-            charts: monitor.getChartData()
-        });
+        const [snapshot, health] = await Promise.all([
+            monitor.getMetricsSnapshot(),
+            monitor.getHealthReport()
+        ]);
+        return c.json({ snapshot, charts: monitor.getChartData(), health }, 200, NO_STORE);
     });
 
     // /health, /prometheus and (optionally) /api/stream

@@ -19,7 +19,7 @@ export function escapeHtml(value: unknown): string {
 }
 
 function sanitizeLabel(value: string): string {
-    return value.replace(/\\/g, '\\\\').replace(/"/g, '\\"').replace(/\n/g, ' ');
+    return value.replace(/\\/g, '\\\\').replace(/"/g, '\\"').replace(/[\r\n]/g, ' ');
 }
 
 function line(name: string, value: number, labels?: Record<string, string>): string {

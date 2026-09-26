@@ -7,6 +7,9 @@ import type { Hono } from 'hono';
 import { toPrometheus } from './format.js';
 import type { MetricsSnapshot, ChartData, HealthReport } from './types.js';
 
+/** Status data is live; never let a proxy or browser cache it. */
+export const NO_STORE: Record<string, string> = { 'Cache-Control': 'no-store' };
+
 interface CommonRouteMonitor {
     config: {
         prometheus: boolean;
@@ -53,7 +56,7 @@ export function registerCommonRoutes(
     // Health endpoint — 200 when all checks pass, 503 when degraded.
     routes.get('/health', async (c) => {
         const report = await monitor.getHealthReport();
-        return c.json(report, report.status === 'ok' ? 200 : 503);
+        return c.json(report, report.status === 'ok' ? 200 : 503, NO_STORE);
     });
 
     // Prometheus / OpenMetrics scrape endpoint.
@@ -62,6 +65,7 @@ export function registerCommonRoutes(
             const snapshot = await monitor.getMetricsSnapshot();
             const body = toPrometheus(snapshot, monitor.config.prometheusPrefix);
             return c.body(body, 200, {
+                ...NO_STORE,
                 'Content-Type': 'text/plain; version=0.0.4; charset=utf-8'
             });
         });
@@ -100,10 +104,13 @@ export function registerCommonRoutes(
                     const push = async () => {
                         if (closed) return;
                         try {
-                            const snapshot = await monitor.getMetricsSnapshot();
+                            const [snapshot, health] = await Promise.all([
+                                monitor.getMetricsSnapshot(),
+                                monitor.getHealthReport()
+                            ]);
                             const charts = monitor.getChartData();
                             controller.enqueue(
-                                encoder.encode(`data: ${JSON.stringify({ snapshot, charts })}\n\n`)
+                                encoder.encode(`data: ${JSON.stringify({ snapshot, charts, health })}\n\n`)
                             );
                         } catch {
                             // Snapshot failed or the stream is gone — tear down the
@@ -113,6 +120,8 @@ export function registerCommonRoutes(
                     };
                     push();
                     timer = setInterval(push, interval);
+                    // An open stream shouldn't by itself keep the process alive.
+                    (timer as { unref?: () => void }).unref?.();
                 },
                 cancel() {
                     cleanup();

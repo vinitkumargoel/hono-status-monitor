@@ -45,7 +45,7 @@ describe('dashboard XSS safety', () => {
 
     it('honors a custom polling interval', () => {
         const html = generateDashboard({ title: 't', hostname: 'h', uptime: '1s', socketPath: '/x', pollingInterval: 4000 });
-        expect(html).toContain('setInterval(fetchMetrics, 4000)');
+        expect(html).toContain('var INTERVAL = 4000;');
     });
 });
 
